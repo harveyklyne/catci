@@ -19,15 +19,23 @@ fit_xgboost <- function(X, y, num_class = NULL, params) {
   nrounds <- params$nrounds
   params$nrounds <- NULL
 
-  xgb <- xgboost::xgboost(data = X,
-                          label = y - 1, # xgboost requires labels to be in {0, ..., num_class - 1}.
-                          params = params,
-                          nrounds = nrounds,
-                          verbose = 0,
-                          nthread = 2,
-                          objective = "multi:softprob",
-                          eval_metric = "mlogloss",
-                          num_class = num_class)
+  # xgboost >= 2.0 removed the direct data/label/objective arguments from the
+  # high-level xgboost() wrapper (it now infers the objective from y). Use the
+  # low-level xgb.train() + xgb.DMatrix() interface to keep the original
+  # behaviour. nthread = 1 so the outer future_apply() parallelism owns the
+  # cores rather than oversubscribing them.
+  params$objective <- "multi:softprob"
+  params$eval_metric <- "mlogloss"
+  params$num_class <- num_class
+  params$nthread <- 1
+
+  dtrain <- xgboost::xgb.DMatrix(data = as.matrix(X),
+                                 label = y - 1) # xgboost requires labels to be in {0, ..., num_class - 1}.
+
+  xgb <- xgboost::xgb.train(params = params,
+                            data = dtrain,
+                            nrounds = nrounds,
+                            verbose = 0)
 
   fit <- function(X, n = NULL){
     pred <- stats::predict(xgb, newdata = as.matrix(X))

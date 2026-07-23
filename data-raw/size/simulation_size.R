@@ -3,10 +3,9 @@ library(parallel)
 library(future)
 library(future.apply)
 library(progressr)
-library(tidyverse)
+library(dplyr)
 
 library(rjson)
-library(reshape2)
 
 options(future.wait.interval=0L)
 
@@ -15,57 +14,48 @@ handlers(handler_progress(format="[:bar] :percent :eta :message"))
 
 
 ### Initialise computing cluster
-worker_names <- NULL # put your worker names here
-working_directory <- NULL # put your working directory here
-
-
-# # Wake workers
-for (worker in worker_names){
-  system(paste0("/alt/bin/wake ", worker))
-}
-Sys.sleep(60)
-
-nodes_per_worker <- 1
-
-my_cluster <- parallelly::makeClusterPSOCK(
-  rep(worker_names, nodes_per_worker),
-  outfile="", # this option ensures that error messages and status messages are printed to the console of the host (i.e. the computer the running the script)
-  homogeneous=FALSE) # homogeneous = FALSE is crucial if the operating system of the host (i.e. the computer running the script) differs from the operating system of the workers
-
-
-devtools::load_all()
-
-clusterEvalQ(my_cluster, library(devtools))
-clusterExport(my_cluster, c("working_directory"), envir = .GlobalEnv)
-clusterEvalQ(my_cluster, setwd(working_directory))
-clusterEvalQ(my_cluster, devtools::load_all())
-
-plan(cluster, workers=my_cluster)
+# Local multicore backend. Each worker is a fresh R session that loads the
+# installed catci package. Install it first with:  R CMD INSTALL .
+library(catci)
+# Cap at 5 (of 6 cores) to leave headroom for the OS / main process on an 8 GB machine.
+plan(multisession, workers = 5)
 
 
 ### Define simulations
 
-devtools::load_all()
+dir.create("results", showWarnings = FALSE)
 
 reps <- 1000
 
 ns <- c(1000)
 ds <- c(8)
-xysettings <- rbind(#c("sin", "sin"),
-                    #c("sin", "sig"),
-                    #c("sig", "sig"),
-                    c("lin", "lin"),
+xysettings <- rbind(c("lin", "lin"), # ordered cheapest-first (sin/sig settings are slower to fit)
                     c("lin", "vee"),
                     c("lin", "hat"),
                     c("vee", "vee"),
                     c("vee", "hat"),
-                    c("hat", "hat"))
+                    c("hat", "hat"),
+                    c("sig", "sig"),
+                    c("sin", "sig"),
+                    c("sin", "sin"))
+
+### Per-block timing log
+timing_log <- file.path("results", "timing_size.log")
+cat(sprintf("# size run started %s\n", format(Sys.time())), file = timing_log, append = TRUE)
 
 for (xyi in seq_len(nrow(xysettings))){
   xsetting <- xysettings[xyi, 1]
   ysetting <- xysettings[xyi, 2]
 
+  # Resume support: skip a block whose output CSV already exists.
+  out_csv <- file.path("results", paste0("size_", xsetting, "_", ysetting, ".csv"))
+  if (file.exists(out_csv)) {
+    print(paste0("Skipping (already done): ", out_csv))
+    next
+  }
+
   print(paste0("Starting x = ", xsetting, ", y = ", ysetting))
+  block_t0 <- Sys.time()
 
   param_grid <- expand.grid(n = ns,
                             d = ds,
@@ -78,13 +68,14 @@ for (xyi in seq_len(nrow(xysettings))){
     prog_bar <- progressor(along=1:(nrow(sim_df)))
     sim_res <- future_apply(sim_df, MARGIN=1, future.seed=TRUE, simplify=FALSE, FUN = function(x) {
       prog_bar()
+      tryCatch({
       n <- as.numeric(x["n"])
       d <- as.numeric(x["d"])
       xsetting <- as.character(x["xsetting"])
       ysetting <- as.character(x["ysetting"])
       n_boot <- 100
 
-      methods <- "tree" # c("tree", "ordinal", "max", "euclid", "mGCM")
+      methods <- c("tree", "ordinal", "max", "euclid", "mGCM")
 
 
       data <- simulate_data(n = n,
@@ -99,7 +90,7 @@ for (xyi in seq_len(nrow(xysettings))){
       xparams <- rjson::fromJSON(file = paste0("data-raw/tuning/n", n, "_numclass", d, "/tune_", xsetting, "_results.json"))$xgb
       yparams <- rjson::fromJSON(file = paste0("data-raw/tuning/n", n, "_numclass", d, "/tune_", ysetting, "_results.json"))$xgb
 
-      stats <- formulate_statistics(data = data,
+      stats <- catci:::formulate_statistics(data = data,
                                     xnum_class = d,
                                     ynum_class = d,
                                     method = "xgb",
@@ -115,11 +106,19 @@ for (xyi in seq_len(nrow(xysettings))){
                              methods = methods)
 
       return(values)
+      }, error = function(e) list(error = conditionMessage(e)))
     })})
 
   sim_res_df <- cbind(sim_df, data.table::rbindlist(sim_res, fill = TRUE))
-  write.csv(sim_res_df, paste0("size_", xsetting, "_", ysetting, ".csv"), row.names=FALSE)
+  write.csv(sim_res_df, out_csv, row.names=FALSE)
+
+  block_min <- as.numeric(difftime(Sys.time(), block_t0, units = "mins"))
+  n_err <- if ("error" %in% names(sim_res_df)) sum(!is.na(sim_res_df$error)) else 0L
+  log_line <- sprintf("%s  x=%-3s y=%-3s  rows=%-5d errors=%-4d  %6.1f min",
+                      format(Sys.time()), xsetting, ysetting, nrow(sim_df), n_err, block_min)
+  cat(log_line, "\n", file = timing_log, append = TRUE, sep = "")
+  print(log_line)
 
 }
 
-stopCluster(my_cluster)
+plan(sequential)  # shut down workers
