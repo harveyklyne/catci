@@ -1,4 +1,5 @@
 .Rproj.user
 *.md
 !fixtures/README.md
+!python/README.md
 results/

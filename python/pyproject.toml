@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "catci"
+version = "0.0.1"
+description = "Conditional independence testing for structured categorical data (Python port of the R catci package)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Harvey Klyne" }]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "hypothesis>=6.0",
+]
+learners = [
+    "scikit-learn>=1.3",
+    "xgboost>=2.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/catci"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
