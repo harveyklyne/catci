@@ -2,7 +2,7 @@
   "metadata": {
     "description": "catci differential-test fixtures: deterministic seams of the R method, frozen for the Python port.",
     "generated": "2026-07-23",
-    "git_commit": "a84ff9caf071dbe6a1e4960a1a1b7538e268a5f0",
+    "git_commit": "8fb26cb191987506f6638d6b107118387be13adb",
     "r_version": "R version 4.6.1 (2026-06-24)",
     "seed": 20260723,
     "tolerance": "Compare floats with atol=1e-9, rtol=1e-7. Matrices are row-major with explicit nrow/ncol. All arrays are JSON arrays even when length 1."
@@ -1801,25 +1801,19 @@
           "search": "ordinal",
           "d": 2,
           "num_levels": 0,
-          "pairs": [
-            [1, 2]
-          ]
+          "pairs": []
         },
         "greedy": {
           "search": "greedy",
           "d": 2,
           "num_levels": 0,
-          "pairs": [
-            [1, 2]
-          ]
+          "pairs": []
         },
         "tree": {
           "search": "tree",
           "d": 2,
           "num_levels": 0,
-          "pairs": [
-            [1, 2]
-          ]
+          "pairs": []
         }
       },
       {

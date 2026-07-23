@@ -231,9 +231,13 @@ tree_shape <- function(node) {
 permitted_map <- function(d, search, tree) {
   category <- as.list(seq_len(d))
   pairs <- list()
-  for (j1 in seq_len(d - 1)) {
-    j2s <- get_ind2(ind1 = j1, d = d, search = search, tree = tree, category = category)
-    for (j2 in j2s) pairs <- c(pairs, list(I(c(as.integer(j1), as.integer(j2)))))
+  # Apply the (d > 2) guard that the merge loop enforces, so `pairs` reflects
+  # the merges actually permitted (and stays consistent with num_levels).
+  if (d > 2) {
+    for (j1 in seq_len(d - 1)) {
+      j2s <- get_ind2(ind1 = j1, d = d, search = search, tree = tree, category = category)
+      for (j2 in j2s) pairs <- c(pairs, list(I(c(as.integer(j1), as.integer(j2)))))
+    }
   }
   list(
     search = jsonlite::unbox(search),
