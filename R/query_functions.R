@@ -95,8 +95,8 @@ query_lookup <- function(method){
                    dx = dx,
                    dy = dy,
                    metric = "approx_chi",
-                   xsearch = "ordinal",
-                   ysearch = "ordinal",
+                   xsearch = "tree",
+                   ysearch = "tree",
                    colsample_bylevel = 1,
                    trees = list(make_binary_tree(dx), make_binary_tree(dy)))$values}
   }

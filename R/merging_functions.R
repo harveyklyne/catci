@@ -239,7 +239,7 @@ get_num_levels <- function(method, d, tree, category){
     return((d > 2) * (d - 1))
   }
   if (method == "tree"){
-    return(get_tree_levels(tree, category))
+    return((d > 2) * get_tree_levels(tree, category))
   }
 }
 
