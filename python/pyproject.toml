@@ -30,3 +30,4 @@ packages = ["src/catci"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["experiments"]
