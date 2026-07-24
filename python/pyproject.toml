@@ -24,6 +24,12 @@ learners = [
     "scikit-learn>=1.3",
     "xgboost>=2.0",
 ]
+experiments = [
+    "scikit-learn>=1.3",
+    "xgboost>=2.0",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/catci"]

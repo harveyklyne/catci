@@ -18,7 +18,7 @@ from typing import Callable, Protocol
 
 import numpy as np
 
-__all__ = ["Learner", "Predict", "oracle_learner", "crossfit"]
+__all__ = ["Learner", "Predict", "oracle_learner", "xgboost_learner", "crossfit"]
 
 
 class Predict(Protocol):
@@ -40,6 +40,32 @@ def oracle_learner(true_probs: np.ndarray) -> Learner:
     def fit(z_train: np.ndarray, labels_train: np.ndarray, num_class: int) -> Predict:
         def predict(z_new: np.ndarray) -> np.ndarray:
             return true_probs[np.asarray(z_new, dtype=int)]
+
+        return predict
+
+    return fit
+
+
+def xgboost_learner(params: dict) -> Learner:
+    """Gradient-boosted multinomial propensity learner (ports R ``fit_xgboost``).
+
+    ``params`` matches the R tuning JSONs: ``eta``, ``max_depth`` (``"max.depth"``
+    accepted), ``gamma``, ``nrounds``. Objective ``multi:softprob``,
+    ``nthread=1`` so outer parallelism owns the cores (not xgboost).
+    """
+    import xgboost as xgb
+
+    p = {("max_depth" if k == "max.depth" else k): v for k, v in params.items()}
+    nrounds = int(p.pop("nrounds"))
+    p.update(objective="multi:softprob", eval_metric="mlogloss", nthread=1)
+
+    def fit(z_train: np.ndarray, labels_train: np.ndarray, num_class: int) -> Predict:
+        dtrain = xgb.DMatrix(np.asarray(z_train, dtype=float), label=np.asarray(labels_train) - 1)
+        booster = xgb.train({**p, "num_class": num_class}, dtrain, num_boost_round=nrounds)
+
+        def predict(z_new: np.ndarray) -> np.ndarray:
+            dnew = xgb.DMatrix(np.asarray(z_new, dtype=float))
+            return booster.predict(dnew).reshape(-1, num_class)
 
         return predict
 
