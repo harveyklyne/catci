@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "catci"
-version = "0.0.1"
+version = "0.0.2"
 description = "Conditional independence testing for structured categorical data."
 readme = "README.md"
 requires-python = ">=3.11"
