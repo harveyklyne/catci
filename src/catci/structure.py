@@ -1,11 +1,11 @@
 """Merge structures: the single ``permitted_merges`` operation.
 
-This is the load-bearing redesign from CODE_REVIEW.md 4.1. The R package
-represented search structure as three things threaded in lockstep -- a search
-string (``"ordinal"``/``"greedy"``/``"tree"``), a ragged ``trees`` list, and a
-ragged ``categories`` list -- and a separate ``get_num_levels`` that had to
-agree with the merge loop by hand. That split representation *was* the bug
-behind finding #1 (the string and the tree disagreeing) and the guard mismatch.
+The load-bearing redesign of the port (README.md, "Design notes"). The R
+package represented search structure as three things threaded in lockstep -- a
+search string (``"ordinal"``/``"greedy"``/``"tree"``), a ragged ``trees`` list,
+and a ragged ``categories`` list -- and a separate ``get_num_levels`` that had
+to agree with the merge loop by hand. That split representation *was* the bug
+where ``"tree"`` silently ran an ordinal search, plus the guard mismatch it hid.
 
 Here a single object per variable answers one question::
 

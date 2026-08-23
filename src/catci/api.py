@@ -14,7 +14,7 @@ import numpy as np
 from .calibrate import adaptive_pvalue
 from .criteria import ApproxChi
 from .gcm import form_t_sigma
-from .learners import Learner, crossfit
+from .learners import Learner, fit_propensities
 from .search import greedy_search
 from .structure import Structure
 
@@ -39,14 +39,14 @@ def catci_test(
     learner: Optional[Learner] = None,
     n_boot: int = 100,
     normalise: bool = True,
-    nfolds: int = 5,
     rng: Optional[np.random.Generator] = None,
 ) -> CatciResult:
     """Test conditional independence ``X _||_ Y | Z`` for categorical ``X, Y``.
 
     Provide propensities directly (``f``, ``g`` -- the oracle path) or a
-    ``learner`` plus ``z`` to cross-fit them. Returns the p-value together with
-    the observed criterion path and the partitions the search visited.
+    ``learner`` plus ``z`` to fit them on the full sample. Returns the p-value
+    together with the observed criterion path and the partitions the search
+    visited.
     """
     x = np.asarray(x)
     y = np.asarray(y)
@@ -58,8 +58,8 @@ def catci_test(
     if f is None or g is None:
         if learner is None or z is None:
             raise ValueError("Provide either (f, g) or (learner, z).")
-        f = crossfit(z, x, dx, learner, nfolds=nfolds, rng=rng)
-        g = crossfit(z, y, dy, learner, nfolds=nfolds, rng=rng)
+        f = fit_propensities(z, x, dx, learner)
+        g = fit_propensities(z, y, dy, learner)
 
     ts = form_t_sigma(x, y, f, g, normalise=normalise)
     criterion = ApproxChi()

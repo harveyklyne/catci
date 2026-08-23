@@ -1,22 +1,26 @@
 # Differential-test fixtures
 
-`catci_fixtures.json` freezes the **deterministic seams** of the R method so the
-Python port can be tested against R as an oracle (CODE_REVIEW.md §7, step 2).
+`catci_fixtures.json` freezes the **deterministic seams** of the original R
+method so the Python implementation can be tested against R as an oracle.
 
 RNG streams will not match across languages, so we deliberately pin only the
 input → output maps that are *pure functions of their arguments* — never the
 bootstrap or randomised tie-break paths. Given the same inputs, the Python
 implementation must reproduce every value here to numerical tolerance.
 
-## Regenerating
+## Provenance
+
+The R package has been removed from this repo. Its source, and the
+`data-raw/fixtures/export_fixtures.R` script that produced this file, are
+preserved on the **`r-frozen-oracle`** git tag:
 
 ```sh
-Rscript data-raw/fixtures/export_fixtures.R   # run from the package root
+git show r-frozen-oracle:data-raw/fixtures/export_fixtures.R
 ```
 
-The frozen R commit is recorded in `metadata.git_commit` inside the JSON.
-Regenerate (and re-tag) whenever the R method changes. The current file was
-generated from the `r-frozen-oracle` tag.
+The exact R commit is recorded in `metadata.git_commit` inside the JSON. This
+oracle is frozen: it pins behaviour the Python implementation must reproduce,
+and there is no longer an R method for it to track.
 
 ## Conventions (read before parsing in Python)
 
@@ -41,7 +45,7 @@ generated from the `r-frozen-oracle` tag.
 | `scalar_methods` | `query_lookup` depth-1 methods | `mGCM`, `max`, `euclid` on the shared `(T, Sigma)`. |
 | `approx_chi` | Box (1954) chi-square CDF | `approx_chi_metric(normsq, tr, tr2) = pchisq(normsq/(tr2/tr), df=tr²/tr2)`. The one real cross-language numeric risk. |
 | `rank_one_updates` | update formulae (24)–(27) | fast update **and** dense recomputation of `new_T`, `new_Sigma`, `normsq/tr/tr2`; they must agree. |
-| `tree_structure` | the structure object (§4.1) | `make_binary_tree(d)` shape and the `permitted_merges` map (`get_ind2`/`get_num_levels`) for `ordinal`/`greedy`/`tree` at `d ∈ {2,4,8}`, on the initial partition. |
+| `tree_structure` | the structure object | `make_binary_tree(d)` shape and the `permitted_merges` map (`get_ind2`/`get_num_levels`) for `ordinal`/`greedy`/`tree` at `d ∈ {2,4,8}`, on the initial partition. |
 
 ## Suggested Python usage
 

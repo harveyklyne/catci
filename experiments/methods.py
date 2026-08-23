@@ -5,7 +5,7 @@ shared double bootstrap) and the competitors (ankan, chi_sq, multinomial). This
 replaces the R split across ``formulate_statistics`` (three unconditional
 competitors) and ``evaluate_sim`` (the calibrated ones): here every method is an
 explicit registry entry the runner asks for, so an expensive competitor is paid
-for only when requested (CODE_REVIEW.md 4.2).
+for only when requested.
 """
 
 from __future__ import annotations

@@ -4,8 +4,7 @@ A criterion carries just enough state to be updated cheaply after a rank-one
 merge. ``ApproxChi`` is the one live criterion (Box's chi-square CDF); the
 non-adaptive comparators (``euclid``, ``max``, ``mGCM``) are depth-0 value
 functions -- the same code path at search depth 0, which is what the paper
-claims they are. Per CODE_REVIEW.md 7, we deliberately keep this small: no
-metric zoo.
+claims they are. Deliberately kept small: no metric zoo.
 
 Pinned by the ``approx_chi`` and ``scalar_methods`` fixtures.
 """

@@ -2,9 +2,9 @@
 
 1. Rank-one update formulae must equal dense recomputation for random inputs
    (Hypothesis) -- the place a silent numerical error would be invisible in the
-   figures (CODE_REVIEW.md 5.1).
+   figures.
 2. Calibration under a known Gaussian: with T ~ N(0, Sigma), the adaptive
-   double-bootstrap p-value is (approximately) uniform (CODE_REVIEW.md 5.2).
+   double-bootstrap p-value is (approximately) uniform.
    This exercises the whole calibration path with no ML backend or DGP.
 """
 

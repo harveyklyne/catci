@@ -1,5 +1,21 @@
-.Rproj.user
+# Python
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.hypothesis/
+build/
+dist/
+.venv/
+
+# Working notes are scratch by default; tracked docs are opted in below.
 *.md
-!fixtures/README.md
-!python/README.md
-results/
+!README.md
+!tests/fixtures/README.md
+
+# Simulation output (regenerate with experiments/run.py)
+experiments/results/
+experiments/results-r-legacy/
+
+# Editor / OS
+.Rproj.user
+.DS_Store

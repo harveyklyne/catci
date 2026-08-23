@@ -1,7 +1,7 @@
 """Runner: a Config -> one tidy long-format table + a provenance snapshot.
 
-One row per (setting, method, strength, rep) with its p-value (CODE_REVIEW.md
-4.2). Emits parquet plus a JSON sidecar recording the resolved config, git
+One row per (setting, method, strength, rep) with its p-value. Emits parquet
+plus a JSON sidecar recording the resolved config, git
 commit, package versions, seed and runtime -- so a figure is reproducible from
 files, not from an editing session.
 
@@ -17,7 +17,6 @@ import argparse
 import json
 import platform
 import subprocess
-import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
@@ -29,13 +28,13 @@ import pandas as pd
 import dgp
 import methods
 from config import Config, REPO_ROOT, power_config
-from catci.learners import crossfit, xgboost_learner
+from catci.learners import fit_propensities, xgboost_learner
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
 
 def _one_replicate(cfg: Config, strength: float, rep: int, seed_seq) -> list[dict]:
-    """Simulate, cross-fit propensities, and evaluate every requested method."""
+    """Simulate, fit propensities, and evaluate every requested method."""
     rng = np.random.default_rng(seed_seq)
 
     data = dgp.simulate_data(
@@ -43,9 +42,9 @@ def _one_replicate(cfg: Config, strength: float, rep: int, seed_seq) -> list[dic
         strength=strength, intsetting=cfg.intsetting, permute=False, rng=rng,
     )
 
-    # cross-fit f (X|Z) and g (Y|Z) with the per-setting tuned learners
-    f = crossfit(data["z"], data["x"], cfg.d, xgboost_learner(cfg.xgb_params(cfg.xsetting)), cfg.nfolds, rng)
-    g = crossfit(data["z"], data["y"], cfg.d, xgboost_learner(cfg.xgb_params(cfg.ysetting)), cfg.nfolds, rng)
+    # fit f (X|Z) and g (Y|Z) on the full sample with the per-setting tuned learners
+    f = fit_propensities(data["z"], data["x"], cfg.d, xgboost_learner(cfg.xgb_params(cfg.xsetting)))
+    g = fit_propensities(data["z"], data["y"], cfg.d, xgboost_learner(cfg.xgb_params(cfg.ysetting)))
 
     fitted = methods.Fitted.build(data["x"], data["y"], data["z"], f, g, cfg.d, cfg.d, cfg.normalise)
 

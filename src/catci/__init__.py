@@ -1,7 +1,7 @@
 """catci: conditional independence testing for structured categorical data.
 
-Python port of the R ``catci`` package. See CODE_REVIEW.md for the design and
-``fixtures/`` for the R oracle the port is differential-tested against.
+See README.md for the design rationale and ``tests/fixtures/`` for the frozen
+R oracle this implementation is differential-tested against.
 """
 
 from __future__ import annotations

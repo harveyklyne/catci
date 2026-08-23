@@ -13,8 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-# python/tests/conftest.py -> repo root is parents[2]
-FIXTURE_PATH = Path(__file__).resolve().parents[2] / "fixtures" / "catci_fixtures.json"
+FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "catci_fixtures.json"
 
 
 def mat(m: dict) -> np.ndarray:

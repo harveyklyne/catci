@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "catci"
 version = "0.0.1"
-description = "Conditional independence testing for structured categorical data (Python port of the R catci package)."
+description = "Conditional independence testing for structured categorical data."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

@@ -1,15 +1,18 @@
-"""Propensity learners: the ``Z -> P(label | Z)`` interface plus cross-fitting.
+"""Propensity learners: the ``Z -> P(label | Z)`` interface.
 
 A learner is any callable ``fit(z_train, labels_train, num_class) -> predict``,
 where ``predict(z_new)`` returns an ``(m, num_class)`` row-stochastic matrix.
-Cross-fitting (below) turns a learner into out-of-fold propensities ``f`` / ``g``
+:func:`fit_propensities` turns a learner into the propensity matrix ``f`` / ``g``
 and knows nothing about any specific ML backend.
 
-Only the **oracle** learner is implemented here -- it returns the true
-propensities and lets you separate "the test calibrates" from "the regression
-fit well" (CODE_REVIEW.md 4.1). Gradient-boosting / multinomial learners are
-left as a later step (optional ``[learners]`` extra); the interface is fixed so
-they slot in without touching :func:`crossfit`.
+The propensities are fitted on the full sample -- there is no cross-fitting.
+The test calibrates on the fitted propensities themselves, so the sample-splitting
+machinery bought nothing and cost an nfolds-fold slowdown plus a fold-assignment
+RNG stream in every replicate.
+
+The **oracle** learner returns the true propensities and lets you separate "the
+test calibrates" from "the regression fit well";
+:func:`xgboost_learner` is the real one used by the experiments.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from typing import Callable, Protocol
 
 import numpy as np
 
-__all__ = ["Learner", "Predict", "oracle_learner", "xgboost_learner", "crossfit"]
+__all__ = ["Learner", "Predict", "oracle_learner", "xgboost_learner", "fit_propensities"]
 
 
 class Predict(Protocol):
@@ -33,7 +36,7 @@ def oracle_learner(true_probs: np.ndarray) -> Learner:
 
     ``true_probs`` is the full ``(n, num_class)`` matrix indexed by row id; the
     returned predictor selects rows by the integer ids passed as ``z``. This
-    keeps the oracle inside the same cross-fitting machinery as real learners.
+    keeps the oracle behind the same interface as real learners.
     """
     true_probs = np.asarray(true_probs, dtype=float)
 
@@ -72,26 +75,18 @@ def xgboost_learner(params: dict) -> Learner:
     return fit
 
 
-def crossfit(
+def fit_propensities(
     z: np.ndarray,
     labels: np.ndarray,
     num_class: int,
     learner: Learner,
-    nfolds: int = 5,
-    rng: np.random.Generator | None = None,
 ) -> np.ndarray:
-    """Out-of-fold propensity matrix ``(n, num_class)`` via ``nfolds`` cross-fitting."""
-    if rng is None:
-        rng = np.random.default_rng()
+    """Propensity matrix ``(n, num_class)``: fit ``learner`` on the full sample.
+
+    No cross-fitting -- the learner is trained on all of ``(z, labels)`` and
+    predicts back on the same ``z``.
+    """
     z = np.asarray(z)
     labels = np.asarray(labels)
-    n = labels.shape[0]
-
-    fold = rng.integers(0, nfolds, size=n)
-    out = np.empty((n, num_class), dtype=float)
-    for k in range(nfolds):
-        test = fold == k
-        train = ~test
-        predict = learner(z[train], labels[train], num_class)
-        out[test] = predict(z[test])
-    return out
+    predict = learner(z, labels, num_class)
+    return predict(z)
