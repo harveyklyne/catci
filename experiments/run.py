@@ -28,9 +28,22 @@ import pandas as pd
 import dgp
 import methods
 from config import Config, REPO_ROOT, power_config
-from catci.learners import fit_propensities, xgboost_learner
+from catci.learners import fit_propensities, mlp_learner, oracle_learner, xgboost_learner
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
+
+LEARNER_FNS = {"xgb": xgboost_learner, "mlp": mlp_learner}
+
+
+def _build_learner(cfg: Config, setting: str, true_probs: np.ndarray):
+    """The propensity learner named by ``cfg.learner``, with its tuned params.
+
+    ``oracle`` hands back the DGP's own propensities -- the E_f = 0 floor, useful
+    for separating "the learner is the bottleneck" from "the test is".
+    """
+    if cfg.learner == "oracle":
+        return oracle_learner(true_probs)
+    return LEARNER_FNS[cfg.learner](cfg.learner_params(setting))
 
 
 def _one_replicate(cfg: Config, strength: float, rep: int, seed_seq) -> list[dict]:
@@ -43,8 +56,12 @@ def _one_replicate(cfg: Config, strength: float, rep: int, seed_seq) -> list[dic
     )
 
     # fit f (X|Z) and g (Y|Z) on the full sample with the per-setting tuned learners
-    f = fit_propensities(data["z"], data["x"], cfg.d, xgboost_learner(cfg.xgb_params(cfg.xsetting)))
-    g = fit_propensities(data["z"], data["y"], cfg.d, xgboost_learner(cfg.xgb_params(cfg.ysetting)))
+    z = data["z"]
+    if cfg.learner == "oracle":
+        # oracle_learner indexes true_probs by row id, so feed it row ids as z
+        z = np.arange(cfg.n)
+    f = fit_propensities(z, data["x"], cfg.d, _build_learner(cfg, cfg.xsetting, data["f"]))
+    g = fit_propensities(z, data["y"], cfg.d, _build_learner(cfg, cfg.ysetting, data["g"]))
 
     fitted = methods.Fitted.build(data["x"], data["y"], data["z"], f, g, cfg.d, cfg.d, cfg.normalise)
 
@@ -84,7 +101,9 @@ def run(cfg: Config, workers: int = 5, seed: int = 0) -> pd.DataFrame:
             rows.extend(_task(t))
     else:
         import multiprocessing as mp
-        ctx = mp.get_context("fork")
+        # "spawn", not "fork": the MLP learner's BLAS threads make a forked child
+        # abort in the macOS Objective-C runtime.
+        ctx = mp.get_context("spawn")
         with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as ex:
             for res in ex.map(_task, tasks, chunksize=4):
                 rows.extend(res)
@@ -125,11 +144,11 @@ def _write_provenance(cfg, df, elapsed, workers, seed, out_parquet):
     (out_parquet.with_suffix(".provenance.json")).write_text(json.dumps(prov, indent=2))
 
 
-def _parse_config(name: str, reps=None, strengths=None) -> Config:
+def _parse_config(name: str, reps=None, strengths=None, learner="xgb") -> Config:
     parts = name.split("_")
     # intsetting may itself contain '_' (binary_tree)
     xsetting, ysetting, intsetting = parts[0], parts[1], "_".join(parts[2:])
-    cfg = power_config(xsetting, ysetting, intsetting)
+    cfg = power_config(xsetting, ysetting, intsetting, learner=learner)
     over = {}
     if reps is not None:
         over["reps"] = reps
@@ -145,9 +164,10 @@ def main():
     ap.add_argument("--strengths", type=str, default=None, help="comma-separated, e.g. 0.6,1.0,1.4")
     ap.add_argument("--workers", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--learner", choices=["xgb", "mlp", "oracle"], default="xgb")
     args = ap.parse_args()
     strengths = [float(s) for s in args.strengths.split(",")] if args.strengths else None
-    cfg = _parse_config(args.config, reps=args.reps, strengths=strengths)
+    cfg = _parse_config(args.config, reps=args.reps, strengths=strengths, learner=args.learner)
     run(cfg, workers=args.workers, seed=args.seed)
 
 

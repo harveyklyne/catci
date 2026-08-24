@@ -40,6 +40,22 @@ class Config:
     normalise: bool = False
     adaptive: List[str] = field(default_factory=list)
     competitors: List[str] = field(default_factory=list)
+    learner: str = "xgb"  # "xgb" | "mlp" | "oracle"
+
+    def learner_params(self, setting: str) -> dict:
+        """The tuned hyperparameters for ``self.learner`` under this marginal setting.
+
+        Both learners' winners live in the same per-setting JSON, each tuned on
+        the same held-out-mlogloss protocol (see ``tune_mlp.py``), so switching
+        ``learner`` compares two *tuned* models rather than tuned-vs-default.
+        """
+        if self.learner == "oracle":
+            return {}
+        path = TUNING_ROOT / f"n{self.n}_numclass{self.d}" / f"tune_{setting}_results.json"
+        blob = json.loads(path.read_text())
+        if self.learner not in blob:
+            raise KeyError(f"No {self.learner!r} params in {path}; run tune_mlp.py --write.")
+        return blob[self.learner]
 
     def xgb_params(self, setting: str) -> dict:
         path = TUNING_ROOT / f"n{self.n}_numclass{self.d}" / f"tune_{setting}_results.json"
@@ -47,6 +63,13 @@ class Config:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _suffix_name(cfg: dict) -> dict:
+    """Tag a non-default learner into the name, so its parquet does not collide."""
+    if cfg.get("learner", "xgb") != "xgb":
+        cfg["name"] = f"{cfg['name']}__{cfg['learner']}"
+    return cfg
 
 
 def size_config(xsetting: str, ysetting: str, **overrides) -> Config:
@@ -59,7 +82,7 @@ def size_config(xsetting: str, ysetting: str, **overrides) -> Config:
         competitors=["ankan", "chi_sq"],
     )
     cfg.update(overrides)
-    return Config(**cfg)
+    return Config(**_suffix_name(cfg))
 
 
 def power_config(xsetting: str, ysetting: str, intsetting: str, **overrides) -> Config:
@@ -82,4 +105,4 @@ def power_config(xsetting: str, ysetting: str, intsetting: str, **overrides) -> 
         adaptive=adaptive, competitors=["ankan", "chi_sq", "multinomial"],
     )
     cfg.update(overrides)
-    return Config(**cfg)
+    return Config(**_suffix_name(cfg))

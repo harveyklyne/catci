@@ -24,7 +24,7 @@ def report(df, cfg):
     d["reject"] = d.p_value < ALPHA
     tab = d.groupby("method")["reject"].agg(["mean", "count"])
     se = np.sqrt(ALPHA * (1 - ALPHA) / cfg.reps)
-    print(f"\n### size {cfg.xsetting}_{cfg.ysetting}  |  reps={cfg.reps}")
+    print(f"\n### size {cfg.xsetting}_{cfg.ysetting}  |  learner={cfg.learner}  reps={cfg.reps}")
     print(f"    nominal alpha={ALPHA:.3f}  binomial SE~{se:.3f}  (|rate-0.05|>~{2*se:.3f} is notable)")
     order = ["tree", "ordinal", "tree_bonf", "ordinal_bonf",
              "max", "euclid", "mGCM", "ankan", "chi_sq"]
@@ -41,11 +41,12 @@ def main():
     ap.add_argument("--reps", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--learner", choices=["xgb", "mlp", "oracle"], default="xgb")
     args = ap.parse_args()
 
     for s in args.settings:
         xs, ys = s.split("_")
-        cfg = size_config(xs, ys, reps=args.reps)
+        cfg = size_config(xs, ys, reps=args.reps, learner=args.learner)
         df = runner.run(cfg, workers=args.workers, seed=args.seed)
         report(df, cfg)
 

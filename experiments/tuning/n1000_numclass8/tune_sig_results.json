@@ -1,1 +1,31 @@
-{"xgb":{"eta":0.01,"max.depth":1,"gamma":2,"nrounds":621}}
+{
+  "xgb": {
+    "eta": 0.01,
+    "max.depth": 1,
+    "gamma": 2,
+    "nrounds": 621
+  },
+  "mlp": {
+    "hidden_layer_sizes": [
+      8,
+      8
+    ],
+    "alpha": 3.0,
+    "activation": "tanh",
+    "max_iter": 400
+  },
+  "mlp_tuning": {
+    "grid": "full",
+    "reps": 20,
+    "seed": 0,
+    "n_tr": 800,
+    "n_te": 5000,
+    "metric": "held-out mlogloss",
+    "best_mlogloss": 2.075324,
+    "reference_mlogloss": {
+      "xgb": 2.07914,
+      "oracle": 2.063726,
+      "uniform": 2.079442
+    }
+  }
+}
