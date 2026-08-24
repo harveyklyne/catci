@@ -39,6 +39,14 @@ res = catci_test(
 res.p_value, res.statistics, res.partitions
 ```
 
+Or swap the propensity model without touching anything else:
+
+```python
+from catci.learners import mlp_learner
+
+learner = mlp_learner({"hidden_layer_sizes": [8, 8], "alpha": 3.0})
+```
+
 Pass `f=`/`g=` instead of `learner=`/`z=` to supply propensities `P(X|Z)`,
 `P(Y|Z)` directly — the oracle path, which separates "does the test calibrate"
 from "did the regression fit well".
@@ -54,7 +62,7 @@ src/catci/
   search.py      greedy_search: the adaptive label-merging path
   bootstrap.py   matrix_sqrt + N(0, Sigma) sampling
   calibrate.py   minP calibration of the search path + adaptive_pvalue
-  learners.py    Z -> P(label|Z) interface + oracle / xgboost learners
+  learners.py    Z -> P(label|Z) interface + oracle / xgboost / mlp learners
   api.py         catci_test: the public entry point
 
 experiments/
@@ -63,7 +71,11 @@ experiments/
   methods.py     method registry: name -> p-value on a fitted dataset
   run.py         power grids -> parquet + provenance sidecar
   run_size.py    null-calibration (size) runs
-  tuning/        frozen XGBoost hyperparameters, one JSON per marginal setting
+  tuning/        tuned hyperparameters, one JSON per marginal setting
+  tune_mlp.py    MLP tuner on the R protocol (held-out mlogloss)
+  bench_learners.py  propensity quality: E_f, the Assumption 1 remainder
+  report_learners.py print the size/power/propensity comparison tables
+  bench_sweep.sh     drive the whole learner comparison
 
 tests/
   fixtures/      the frozen R oracle (see fixtures/README.md)

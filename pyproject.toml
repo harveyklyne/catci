@@ -23,10 +23,14 @@ test = [
 learners = [
     "scikit-learn>=1.3",
     "xgboost>=2.0",
+    # imported directly by mlp_learner to pin BLAS threads; ships with sklearn,
+    # but the import is ours so the dependency is declared rather than borrowed.
+    "threadpoolctl>=3.0",
 ]
 experiments = [
     "scikit-learn>=1.3",
     "xgboost>=2.0",
+    "threadpoolctl>=3.0",
     "pandas>=2.0",
     "pyarrow>=14.0",
 ]
