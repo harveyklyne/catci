@@ -29,6 +29,7 @@ experiments = [
     "xgboost>=2.0",
     "pandas>=2.0",
     "pyarrow>=14.0",
+    "statsmodels>=0.14",   # proportional-odds model for the Ankan & Textor port
 ]
 
 [tool.hatch.build.targets.wheel]

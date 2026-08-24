@@ -64,6 +64,10 @@ experiments/
   run.py         power grids -> parquet + provenance sidecar
   run_size.py    null-calibration (size) runs
   tuning/        frozen XGBoost hyperparameters, one JSON per marginal setting
+  adult.py       UCI adult income, preprocessed as Ankan & Textor describe it
+  ankan_textor.py  their AAAI-23 test (LS residuals + Q1/Q2/Q3), ported
+  run_adult.py   the 36-pair real-data sweep
+  ADULT.md       what that reproduces, and what it cannot
 
 tests/
   fixtures/      the frozen R oracle (see fixtures/README.md)
@@ -177,11 +181,31 @@ check. RNG streams do not match across languages, so the fixtures deliberately
 pin only pure input to output maps, never bootstrap or randomised tie-break
 paths. See `tests/fixtures/README.md` for the JSON conventions.
 
+## Real data
+
+`experiments/ADULT.md` documents a port of Ankan & Textor (AAAI-23) applied to
+UCI adult income. Two things there are worth knowing outside that file:
+
+- **Their paper reports no p-values from their own method.** Fig. 1b's p-values
+  are the stratified-MI baseline it argues against; Figs. 8a/8b are a skeleton and
+  an F1 curve. The port is validated by properties plus one numeric anchor (Fig.
+  1b's df column, which reproduces exactly and pins the preprocessing), not
+  value-for-value.
+- **Their `Sigma_d` goes rank-deficient at high cardinality, silently.** When an X
+  level and a Y level never co-occur within a stratum of Z, a product column is
+  identically zero; `np.linalg.solve` still returns a number at a condition
+  number of 1e21. Any comparison of `catci` against this test needs the
+  `well_conditioned` flag, or it will be comparing against noise.
+
 ## Known gaps
 
 - **Results are stale.** Every figure in `experiments/results-r-legacy/` came
   from R with cross-fitting. Nothing in the paper yet comes from this code; the
   grid needs re-running with `experiments/run.py`.
+- **`catci` has not been run on adult income.** The Ankan & Textor side is done
+  and the data layer is shared, but choosing per-variable structures
+  (`Ordinal`/`Tree`/`Saturated`) and a propensity learner for n = 30,162 is
+  blocked on the missing tuner below.
 - **`d` is not a real axis.** `dgp.py` is parametric in `d`, but every config is
   hardcoded to `d = 8`. The motivating example is `dX = 30, dY = 10`.
 - **No tuner.** `experiments/tuning/` holds the frozen hyperparameters for
