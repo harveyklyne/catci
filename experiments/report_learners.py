@@ -42,10 +42,14 @@ def size_table(settings, learners):
                 frames[learner] = df
         if not frames:
             continue
-        reps = max(len(f) // f.method.nunique() for f in frames.values())
-        se = np.sqrt(ALPHA * (1 - ALPHA) / reps)
-        print(f"\n### {setting}   reps={reps}, binomial SE~{se:.4f} "
-              f"(|rate-0.05| > {2*se:.3f} is notable)")
+        # per column, not a single max: a partial or stale run has fewer reps and
+        # a wider error bar, and labelling every column with the largest count
+        # would quietly overstate the others' precision
+        reps = {k: f.rep.nunique() for k, f in frames.items()}
+        print(f"\n### {setting}")
+        for k, r in reps.items():
+            print(f"    {k:8s} reps={r:<6d} binomial SE~{np.sqrt(ALPHA*(1-ALPHA)/r):.4f} "
+                  f"(|rate-0.05| > {2*np.sqrt(ALPHA*(1-ALPHA)/r):.3f} is notable)")
         print(f"    {'method':10s}" + "".join(f"{k:>10s}" for k in frames))
         for m in ORDER:
             cells = []
