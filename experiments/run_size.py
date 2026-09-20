@@ -26,7 +26,8 @@ def report(df, cfg):
     se = np.sqrt(ALPHA * (1 - ALPHA) / cfg.reps)
     print(f"\n### size {cfg.xsetting}_{cfg.ysetting}  |  reps={cfg.reps}")
     print(f"    nominal alpha={ALPHA:.3f}  binomial SE~{se:.3f}  (|rate-0.05|>~{2*se:.3f} is notable)")
-    order = ["tree", "ordinal", "max", "euclid", "mGCM", "ankan", "chi_sq"]
+    order = ["tree", "ordinal", "tree_bonf", "ordinal_bonf",
+             "max", "euclid", "mGCM", "ankan", "chi_sq"]
     for m in order:
         if m in tab.index:
             rate = tab.loc[m, "mean"]

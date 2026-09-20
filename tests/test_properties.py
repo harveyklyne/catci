@@ -4,8 +4,13 @@
    (Hypothesis) -- the place a silent numerical error would be invisible in the
    figures.
 2. Calibration under a known Gaussian: with T ~ N(0, Sigma), the adaptive
-   double-bootstrap p-value is (approximately) uniform.
-   This exercises the whole calibration path with no ML backend or DGP.
+   minP p-value is (approximately) uniform. This exercises the whole path --
+   search, bootstrap and calibration -- with no ML backend or DGP.
+
+These are integration checks and are rep-limited (each rep runs n_boot + 1 greedy
+searches), so they are deliberately loose. The sharp statement about the
+calibration lives in ``test_calibrate.py``, which reaches it directly and can
+afford 10k reps per L.
 """
 
 import numpy as np
@@ -72,10 +77,12 @@ def test_calibration_under_gaussian():
         )
 
     # Uniform(0,1): mean ~ 0.5, and the level-alpha rejection rate ~ alpha.
+    # 0.03 is ~3 SE at 400 reps and still catches the pre-minP calibration, which
+    # ran at 0.091 here (L = dx + dy - 3 = 5); the old 0.05 tolerance permitted it.
     assert abs(pvals.mean() - 0.5) < 0.06
     for alpha in (0.05, 0.10, 0.20):
         rate = float(np.mean(pvals < alpha))
-        assert abs(rate - alpha) < 0.05, f"rejection rate {rate:.3f} at alpha={alpha}"
+        assert abs(rate - alpha) < 0.03, f"rejection rate {rate:.3f} at alpha={alpha}"
 
 
 def test_tree_calibrates_too():
@@ -88,7 +95,7 @@ def test_tree_calibrates_too():
     Sigma = A @ A.T / p + np.eye(p)
     sqrtS = np.linalg.cholesky(Sigma)
 
-    reps = 300
+    reps = 400
     pvals = np.array([
         adaptive_pvalue(
             sqrtS @ rng.standard_normal(p), Sigma, dx, dy,
@@ -96,4 +103,9 @@ def test_tree_calibrates_too():
         )
         for _ in range(reps)
     ])
+    # A mean-only check cannot see a tail defect, which is what the pre-minP
+    # calibration had -- so assert on the rejection rates too.
     assert abs(pvals.mean() - 0.5) < 0.07
+    for alpha in (0.05, 0.10):
+        rate = float(np.mean(pvals < alpha))
+        assert abs(rate - alpha) < 0.03, f"rejection rate {rate:.3f} at alpha={alpha}"

@@ -1,7 +1,15 @@
 """Config-as-data: one resolved object per figure.
 
 A figure is reproducible from a :class:`Config` plus a seed -- not from an
-editing session. XGBoost
+editing session.
+
+``n_boot`` is 1000 rather than the 100 the R runs used. The minP calibration is
+exact at any ``n_boot``, but its p-values live on the ``1/(n_boot+1)`` grid and
+with ``L = dx + dy - 3`` search levels several paths tie at the floor, so small
+``n_boot`` costs power: at ``d = 8`` (``L = 13``) ``n_boot = 100`` recovers about
+half the power available at ``n_boot = 1000``, and 1000 is where the curve has
+flattened. It is also what the ``_bonf`` comparators need to be able to reject at
+all (floor ``L/(n_boot+1)``). XGBoost
 hyperparameters live beside this file in ``tuning/`` -- one JSON per marginal
 setting, carried over from the tuning runs so the package is self-contained.
 """
@@ -28,7 +36,7 @@ class Config:
     intsetting: str
     strengths: List[float]
     reps: int = 200
-    n_boot: int = 100
+    n_boot: int = 1000
     normalise: bool = False
     adaptive: List[str] = field(default_factory=list)
     competitors: List[str] = field(default_factory=list)
@@ -46,8 +54,8 @@ def size_config(xsetting: str, ysetting: str, **overrides) -> Config:
     cfg = dict(
         name=f"size_{xsetting}_{ysetting}",
         n=1000, d=8, xsetting=xsetting, ysetting=ysetting, intsetting="step",
-        strengths=[0.0], reps=1000, n_boot=100, normalise=False,
-        adaptive=["tree", "ordinal", "max", "euclid", "mGCM"],
+        strengths=[0.0], reps=1000, n_boot=1000, normalise=False,
+        adaptive=["tree", "ordinal", "tree_bonf", "ordinal_bonf", "max", "euclid", "mGCM"],
         competitors=["ankan", "chi_sq"],
     )
     cfg.update(overrides)
@@ -62,15 +70,15 @@ def power_config(xsetting: str, ysetting: str, intsetting: str, **overrides) -> 
     """
     adaptive = ["max", "euclid", "mGCM"]
     if intsetting == "binary_tree":
-        adaptive = ["tree"] + adaptive
+        adaptive = ["tree", "tree_bonf"] + adaptive
     elif intsetting == "step":
-        adaptive = ["ordinal"] + adaptive
+        adaptive = ["ordinal", "ordinal_bonf"] + adaptive
 
     cfg = dict(
         name=f"power_{xsetting}_{ysetting}_{intsetting}",
         n=1000, d=8, xsetting=xsetting, ysetting=ysetting, intsetting=intsetting,
         strengths=[round(0.2 * k, 1) for k in range(1, 10)],  # 0.2 .. 1.8
-        reps=200, n_boot=100, normalise=False,
+        reps=200, n_boot=1000, normalise=False,
         adaptive=adaptive, competitors=["ankan", "chi_sq", "multinomial"],
     )
     cfg.update(overrides)

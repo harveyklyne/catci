@@ -41,7 +41,7 @@ and there is no longer an R method for it to track.
 | key | seam | what it pins |
 |---|---|---|
 | `form_T_Sigma` | `(x, y, f, g, normalise) → (T_vector, Sigma)` | GCM construction; both `normalise` settings. Frozen `(x,y,f,g)` inputs included. |
-| `search_paths` | `greedy_query` on a shared `(T, Sigma)`, `dx=dy=8` | criterion `values` **and** the partition sequence for `ordinal`, `tree`, `greedy`. Catches finding #1: `tree` ≠ `ordinal`. |
+| `search_paths` | `greedy_query` on a shared `(T, Sigma)`, `dx=dy=8` | statistic `values` **and** the partition sequence for `ordinal`, `tree`, `greedy`. Catches finding #1: `tree` ≠ `ordinal`. |
 | `scalar_methods` | `query_lookup` depth-1 methods | `mGCM`, `max`, `euclid` on the shared `(T, Sigma)`. |
 | `approx_chi` | Box (1954) chi-square CDF | `approx_chi_metric(normsq, tr, tr2) = pchisq(normsq/(tr2/tr), df=tr²/tr2)`. The one real cross-language numeric risk. |
 | `rank_one_updates` | update formulae (24)–(27) | fast update **and** dense recomputation of `new_T`, `new_Sigma`, `normsq/tr/tr2`; they must agree. |

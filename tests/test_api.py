@@ -16,7 +16,7 @@ def test_catci_test_runs_end_to_end():
 
     res = catci_test(x, y, Ordinal(), Ordinal(), f=f, g=g, n_boot=50, rng=rng)
     assert 0.0 <= res.p_value <= 1.0
-    assert res.criteria[0] == res.criteria[0]  # not NaN
+    assert res.statistics[0] == res.statistics[0]  # not NaN
     # first partition is the fully-split one, last has 2 groups per dimension
     assert res.partitions[0]["x"] == [[1], [2], [3], [4]]
     assert len(res.partitions[-1]["x"]) == 2 and len(res.partitions[-1]["y"]) == 2

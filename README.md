@@ -34,9 +34,9 @@ res = catci_test(
     y_structure=Tree.binary(dy),
     z=z,                                   # conditioning variables
     learner=xgboost_learner({"eta": 0.01, "max.depth": 1, "gamma": 2, "nrounds": 163}),
-    n_boot=100,
+    n_boot=1000,                           # see 'Calibration' below
 )
-res.p_value, res.criteria, res.partitions
+res.p_value, res.statistics, res.partitions
 ```
 
 Pass `f=`/`g=` instead of `learner=`/`z=` to supply propensities `P(X|Z)`,
@@ -50,10 +50,10 @@ src/catci/
   gcm.py         form_t_sigma: (x, y, f, g) -> (T, Sigma)          [pure]
   structure.py   Ordinal / Saturated / Tree: permitted_merges()
   merging.py     rank-one update formulae (24)-(27)                [pure]
-  criteria.py    ApproxChi init/update/value + depth-0 comparators
+  statistic.py   ApproxChi init/update/value + depth-0 comparators
   search.py      greedy_search: the adaptive label-merging path
   bootstrap.py   matrix_sqrt + N(0, Sigma) sampling
-  calibrate.py   double_bootstrap_pvalue + adaptive_pvalue
+  calibrate.py   minP calibration of the search path + adaptive_pvalue
   learners.py    Z -> P(label|Z) interface + oracle / xgboost learners
   api.py         catci_test: the public entry point
 
@@ -145,20 +145,48 @@ earlier `nfolds` cross-fitting option was removed: the test calibrates against
 the fitted propensities themselves, so sample splitting bought nothing while
 costing an `nfolds`-fold slowdown and an extra RNG stream per replicate.
 
-### Criteria are init/update/value triples
+### Statistics are init/update/value triples
 
 So the non-adaptive comparators (`max`, `euclid`, `mGCM`) are the same code path
-at search depth 0. There is one live criterion, `ApproxChi` — no metric zoo.
+at search depth 0. There is one live statistic, `ApproxChi` — no statistic zoo.
 
-### Calibration fixes carried into the port
+### Calibration is a minP test
 
-- **Single-metric fall-through.** The R `double_bootstrap_pvalue` could fall
-  through the single-metric branch and return the bootstrap vector instead of a
-  p-value. The scalar path here always returns `1 - cdf`.
-- **Mismatched normalisation.** R ranked the observed statistic with `/(B+1)`
-  while the inner bootstrap ranks used `/B`, so the two stages were not exactly
-  exchangeable at finite `B`. Both stages here use the same randomised
-  `(rank - U)/(B + 1)` rule.
+The search returns a path of `L = dx + dy - 3` statistics — one per coarsening it
+visits — each a valid test statistic for the same null. Using whichever is most
+extreme is a multiple testing problem, so `calibrate.py` solves it as **minP**
+calibrated by resampling (Westfall & Young 1993; Romano & Wolf 2005), with the
+first stage being Beran (1988) prepivoting:
+
+1. Pool the observed path with the `B` bootstrap paths into `B + 1` exchangeable
+   paths, and rank every one of them against the *other* `B`, by one identical
+   leave-one-out rule. That turns each level into a marginal p-value.
+2. Take each path's minimum over levels, and calibrate the observed minimum
+   against the bootstrap minima — the same rule again.
+
+Because every path is treated identically, the result is exactly uniform on
+`{1/(B+1), ..., 1}` under the null at finite `B`. The R implementation was not:
+it ranked the observed path against `B` draws *excluding itself* but each draw
+against `B` *including itself*, so every bootstrap quantile was scaled by
+`B/(B+1)` and the `max` over `L` levels compounded it as `(B/(B+1))^L`. Size ran
+from 0.049 at `L = 1` to 0.358 at `L = 40`. `tests/test_calibrate.py` pins the
+fix, parametrised by `L`.
+
+Two practical consequences of the `1/(B+1)` grid:
+
+- **Ties are broken at random, and that is load-bearing.** Each level puts one
+  path at the floor `1/(B+1)`, so up to `L` paths tie there. Breaking those ties
+  conservatively makes the test unable to reject at all once `L` approaches
+  `alpha * (B + 1)`.
+- **`n_boot` bounds power, not just resolution.** The test is exact at any
+  `n_boot`, but at `d = 8` (`L = 13`) and `n_boot = 100` it recovers only about
+  half the power it reaches at `n_boot = 1000`, which is where the curve
+  flattens. `catci_test` still defaults to 100 for a cheap smoke test; the
+  experiment configs use 1000.
+
+`bonferroni_pvalue` is the comparator: the same statistic path under simple FWER
+control, `min(1, L * min_l p_l)`. Its floor is `L/(B+1)`, so unlike minP it cannot
+reject at level `alpha` at all unless `B >= L/alpha`.
 
 ### DGP fixes carried into the port
 
@@ -172,8 +200,10 @@ at search depth 0. There is one live criterion, `ApproxChi` — no metric zoo.
 
 `tests/` differential-tests every deterministic seam against the frozen R
 oracle in `tests/fixtures/catci_fixtures.json`, plus Hypothesis property tests
-(fast rank-one update == dense recompute) and a calibration-under-Gaussian
-check. RNG streams do not match across languages, so the fixtures deliberately
+(fast rank-one update == dense recompute), a calibration-under-Gaussian check,
+and `test_calibrate.py`, which feeds the calibration exchangeable paths directly
+and asserts uniformity at each `L`. RNG streams do not match across languages,
+so the fixtures deliberately
 pin only pure input to output maps, never bootstrap or randomised tie-break
 paths. See `tests/fixtures/README.md` for the JSON conventions.
 

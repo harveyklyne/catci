@@ -1,10 +1,14 @@
-"""Search criteria as ``init`` / ``update`` / ``value`` triples.
+"""Test statistics as ``init`` / ``update`` / ``value`` triples.
 
-A criterion carries just enough state to be updated cheaply after a rank-one
-merge. ``ApproxChi`` is the one live criterion (Box's chi-square CDF); the
+A statistic carries just enough state to be updated cheaply after a rank-one
+merge. ``ApproxChi`` is the one live statistic (Box's chi-square CDF); the
 non-adaptive comparators (``euclid``, ``max``, ``mGCM``) are depth-0 value
 functions -- the same code path at search depth 0, which is what the paper
-claims they are. Deliberately kept small: no metric zoo.
+claims they are. Deliberately kept small: no statistic zoo.
+
+The search evaluates one of these on every coarsening it visits, so a length-``L``
+search path is a vector of ``L`` test statistics for the same null -- which is
+what :mod:`catci.calibrate` then calibrates as a minP test.
 
 Pinned by the ``approx_chi`` and ``scalar_methods`` fixtures.
 """
@@ -29,7 +33,7 @@ class ChiState:
 
 
 class ApproxChi:
-    """Box (1954) approximate chi-square CDF criterion; larger favours rejection."""
+    """Box (1954) approximate chi-square CDF statistic; larger favours rejection."""
 
     def init(self, T_vector: np.ndarray, Sigma: np.ndarray) -> ChiState:
         return ChiState(
@@ -53,10 +57,10 @@ class ApproxChi:
         )
 
     def value(self, state: ChiState) -> float:
-        return approx_chi_metric(state.normsq, state.tr, state.tr2)
+        return approx_chi_statistic(state.normsq, state.tr, state.tr2)
 
 
-def approx_chi_metric(normsq: float, tr: float, tr2: float) -> float:
+def approx_chi_statistic(normsq: float, tr: float, tr2: float) -> float:
     """``pchisq(normsq / (tr2/tr), df = tr^2 / tr2)`` -- Box (1954)."""
     g = tr2 / tr
     h = tr ** 2 / tr2

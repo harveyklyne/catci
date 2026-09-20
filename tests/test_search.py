@@ -38,7 +38,7 @@ def test_search_paths_match_oracle(oracle, shared_TS):
 
         np.testing.assert_allclose(
             np.asarray(res.values), vec(case["values"]), atol=1e-9, rtol=1e-7,
-            err_msg=f"criterion values differ for method '{name}'",
+            err_msg=f"statistic values differ for method '{name}'",
         )
         assert _fixture_partitions(case) == res.partitions, f"partitions differ for method '{name}'"
 

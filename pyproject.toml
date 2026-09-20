@@ -36,4 +36,4 @@ packages = ["src/catci"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["experiments"]
+pythonpath = ["src", "experiments"]  # test this checkout, not whatever `pip install -e` last pointed at

@@ -12,7 +12,7 @@ from typing import Optional
 import numpy as np
 
 from .calibrate import adaptive_pvalue
-from .criteria import ApproxChi
+from .statistic import ApproxChi
 from .gcm import form_t_sigma
 from .learners import Learner, fit_propensities
 from .search import greedy_search
@@ -24,7 +24,7 @@ __all__ = ["CatciResult", "catci_test"]
 @dataclass(frozen=True)
 class CatciResult:
     p_value: float
-    criteria: np.ndarray  # observed criterion path
+    statistics: np.ndarray  # observed statistic path
     partitions: list  # partition sequence visited by the observed search
 
 
@@ -45,7 +45,7 @@ def catci_test(
 
     Provide propensities directly (``f``, ``g`` -- the oracle path) or a
     ``learner`` plus ``z`` to fit them on the full sample. Returns the p-value
-    together with the observed criterion path and the partitions the search
+    together with the observed statistic path and the partitions the search
     visited.
     """
     x = np.asarray(x)
@@ -62,11 +62,11 @@ def catci_test(
         g = fit_propensities(z, y, dy, learner)
 
     ts = form_t_sigma(x, y, f, g, normalise=normalise)
-    criterion = ApproxChi()
+    statistic = ApproxChi()
 
-    observed = greedy_search(ts.T_vector, ts.Sigma, dx, dy, x_structure, y_structure, criterion)
+    observed = greedy_search(ts.T_vector, ts.Sigma, dx, dy, x_structure, y_structure, statistic)
     p = adaptive_pvalue(
         ts.T_vector, ts.Sigma, dx, dy, x_structure, y_structure,
-        n_boot=n_boot, criterion=criterion, rng=rng,
+        n_boot=n_boot, statistic=statistic, rng=rng,
     )
-    return CatciResult(p_value=p, criteria=np.asarray(observed.values), partitions=observed.partitions)
+    return CatciResult(p_value=p, statistics=np.asarray(observed.values), partitions=observed.partitions)

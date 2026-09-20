@@ -2,8 +2,8 @@
 
 At each level, for each dimension with more than two groups, evaluate every
 permitted merge (from that dimension's :class:`~catci.structure.Structure`),
-take the merge that maximises the criterion, apply it, and repeat until both
-dimensions have two groups. Returns the criterion value before any merge and
+take the merge that maximises the statistic, apply it, and repeat until both
+dimensions have two groups. Returns the statistic value before any merge and
 after each level, plus the partition sequence.
 
 With ``colsample_bylevel = 1`` (the only mode the paper uses) this is a
@@ -21,7 +21,7 @@ from typing import List
 import numpy as np
 
 from . import merging
-from .criteria import ApproxChi
+from .statistic import ApproxChi
 from .structure import Structure
 
 
@@ -42,11 +42,11 @@ def greedy_search(
     dy: int,
     x_structure: Structure,
     y_structure: Structure,
-    criterion=None,
+    statistic=None,
 ) -> SearchResult:
     """Run the greedy merge search; see module docstring."""
-    if criterion is None:
-        criterion = ApproxChi()
+    if statistic is None:
+        statistic = ApproxChi()
 
     T_vector = np.array(T_vector, dtype=float)
     Sigma = np.array(Sigma, dtype=float)
@@ -60,11 +60,11 @@ def greedy_search(
     dims = {1: dx, 2: dy}
 
     result = SearchResult()
-    result.values.append(criterion.value(criterion.init(T_vector, Sigma)))
+    result.values.append(statistic.value(statistic.init(T_vector, Sigma)))
     result.partitions.append(_copy_partition(partition))
 
     while dims[1] > 2 or dims[2] > 2:
-        base_state = criterion.init(T_vector, Sigma)
+        base_state = statistic.init(T_vector, Sigma)
 
         best = None  # (value, dimension, i, j, index1, index2)
         for dimension in (1, 2):
@@ -72,8 +72,8 @@ def greedy_search(
             for (i, j) in structures[dimension].permitted_merges(groups):
                 index1 = merging.get_index(dimension, i, dims[1], dims[2])
                 index2 = merging.get_index(dimension, j, dims[1], dims[2])
-                state = criterion.update(base_state, T_vector, Sigma, index1, index2)
-                value = criterion.value(state)
+                state = statistic.update(base_state, T_vector, Sigma, index1, index2)
+                value = statistic.value(state)
                 # strict '>' keeps the first candidate in loop order on ties (R which.max).
                 if best is None or value > best[0]:
                     best = (value, dimension, i, j, index1, index2)
