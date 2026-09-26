@@ -29,3 +29,27 @@ def test_requires_propensities_or_learner():
     except ValueError:
         return
     raise AssertionError("expected ValueError when neither (f,g) nor (learner,z) given")
+
+
+def test_exact_statistic_option():
+    """statistic="exact" runs the same search and calibration on the exact CDF."""
+    rng = np.random.default_rng(0)
+    n, dx, dy = 300, 4, 4
+    f = rng.uniform(0.2, 1.0, size=(n, dx)); f /= f.sum(1, keepdims=True)
+    g = rng.uniform(0.2, 1.0, size=(n, dy)); g /= g.sum(1, keepdims=True)
+    x = np.array([rng.choice(dx, p=f[i]) + 1 for i in range(n)])
+    y = np.array([rng.choice(dy, p=g[i]) + 1 for i in range(n)])
+
+    approx = catci_test(x, y, Ordinal(), Ordinal(), f=f, g=g, n_boot=30,
+                        rng=np.random.default_rng(5))
+    exact = catci_test(x, y, Ordinal(), Ordinal(), f=f, g=g, n_boot=30,
+                       rng=np.random.default_rng(5), statistic="exact")
+    assert 0.0 <= exact.p_value <= 1.0
+    assert np.all((exact.statistics >= 0) & (exact.statistics <= 1))
+    assert len(exact.partitions) == len(approx.partitions)
+
+    try:
+        catci_test(x, y, Ordinal(), Ordinal(), f=f, g=g, statistic="nope")
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for an unknown statistic")
