@@ -69,6 +69,8 @@ class Structure:
         B, d = sizes.shape
         mask = np.zeros((B, d, d), dtype=bool)
         cache = self.__dict__.setdefault("_mask_cache", {})
+        if len(cache) > 100_000:  # bound the memo; it only saves recomputation
+            cache.clear()
         for b in range(B):
             key = gid[b].tobytes()
             if key not in cache:

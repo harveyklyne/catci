@@ -11,6 +11,7 @@ dist/
 *.md
 !README.md
 !tests/fixtures/README.md
+!VECTORISATION.md
 
 # Simulation output (regenerate with experiments/run.py)
 experiments/results/
