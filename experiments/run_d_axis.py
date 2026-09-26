@@ -58,6 +58,7 @@ def main():
     ap.add_argument("--n-boot", type=int, default=1000)
     ap.add_argument("--methods", type=str, default=None)
     ap.add_argument("--tag", type=str, default=None)
+    ap.add_argument("--learner", choices=["xgboost", "oracle"], default="xgboost")
     ap.add_argument("--workers", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--report-only", action="store_true", help="re-read the parquets, do not run")
@@ -65,7 +66,7 @@ def main():
 
     parts = args.config.split("_")
     xs, ys, ints = parts[0], parts[1], "_".join(parts[2:])
-    over = dict(reps=args.reps, n_boot=args.n_boot, strengths=[float(s) for s in args.strengths.split(",")])
+    over = dict(learner=args.learner, reps=args.reps, n_boot=args.n_boot, strengths=[float(s) for s in args.strengths.split(",")])
     if args.methods:
         ms = args.methods.split(",")
         over["adaptive"] = [m for m in ms if m in methods.ADAPTIVE]

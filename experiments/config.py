@@ -55,6 +55,9 @@ class Config:
     normalise: bool = False
     adaptive: List[str] = field(default_factory=list)
     competitors: List[str] = field(default_factory=list)
+    # "xgboost" (tuned, from tuning/) or "oracle" (the true f, g -- isolates the
+    # test from the regression, as PLAN.md's calibration findings did)
+    learner: str = "xgboost"
 
     def xgb_params(self, setting: str, num_class: int) -> dict:
         path = tuning_path(self.n, num_class, setting)

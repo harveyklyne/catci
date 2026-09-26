@@ -46,8 +46,11 @@ def _one_replicate(cfg: Config, strength: float, rep: int, seed_seq) -> list[dic
     )
 
     # fit f (X|Z) and g (Y|Z) on the full sample with the per-setting tuned learners
-    f = fit_propensities(data["z"], data["x"], cfg.dx, xgboost_learner(cfg.xgb_params(cfg.xsetting, cfg.dx)))
-    g = fit_propensities(data["z"], data["y"], cfg.dy, xgboost_learner(cfg.xgb_params(cfg.ysetting, cfg.dy)))
+    if cfg.learner == "oracle":
+        f, g = data["f"], data["g"]
+    else:
+        f = fit_propensities(data["z"], data["x"], cfg.dx, xgboost_learner(cfg.xgb_params(cfg.xsetting, cfg.dx)))
+        g = fit_propensities(data["z"], data["y"], cfg.dy, xgboost_learner(cfg.xgb_params(cfg.ysetting, cfg.dy)))
 
     fitted = methods.Fitted.build(data["x"], data["y"], data["z"], f, g, cfg.dx, cfg.dy, cfg.normalise)
 
@@ -71,7 +74,8 @@ def _task(args):
 def run(cfg: Config, workers: int = 5, seed: int = 0) -> pd.DataFrame:
     RESULTS_DIR.mkdir(exist_ok=True)
     for setting, d in ((cfg.xsetting, cfg.dx), (cfg.ysetting, cfg.dy)):
-        cfg.xgb_params(setting, d)  # fail now, not once per replicate, if a tuning is missing
+        if cfg.learner != "oracle":
+            cfg.xgb_params(setting, d)  # fail now, not once per replicate, if a tuning is missing
     tasks = []
     ss = np.random.SeedSequence(seed)
     # one independent child seed per (strength, rep), spawned deterministically

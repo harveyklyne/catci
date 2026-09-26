@@ -200,6 +200,51 @@ reject at level `alpha` at all unless `B >= L/alpha`.
 - `d = 8` was hardcoded into the `sin`/`sig`/`hat` generators. `dgp.py` is
   parametric in `d` throughout.
 
+### Tuning, and what breaks as `d` grows
+
+`catci.tuning.tune_xgboost` picks `(eta, max_depth, gamma, nrounds)` by K-fold
+CV log-loss. `nrounds` is read off the mean validation curve rather than
+gridded. Several simulated replicates are tuned in one `xgb.cv` call, with
+folds kept inside each replicate, so the training size is `(K-1)/K * n` — at
+`n = 1000, K = 5` that is the R tuner's `n_tr = 800`. `experiments/tune.py`
+draws tuning data from `dgp.simulate_marginal`: the interaction preserves both
+margins, so one tuning per `(n, num_class, setting)` serves every interaction,
+strength and partner dimension.
+
+At `n = 1000, d = 8`, the cheap `FAST_GRID` (eta 0.1, 9 points) matches the
+frozen R tuning (eta 0.01, 28 points) on mean `KL(f || f_hat)` to the true
+propensities, and fits 10-40x faster (`tune_check.py`, 20 reps, SE ~0.0007):
+
+| setting | R tuning | fast grid | Z-blind (class freq) |
+|---|---:|---:|---:|
+| sin | 0.0173 | 0.0141 | 0.0200 |
+| sig | 0.0122 | 0.0122 | 0.0192 |
+| lin | 0.0176 | 0.0185 | 0.0331 |
+| vee | 0.0190 | 0.0183 | 0.0424 |
+| hat | 0.0236 | 0.0234 | 0.0733 |
+
+**Learners that treat labels as unrelated classes stop working at large `d`.**
+In these DGPs `X | Z` carries about 0.02 nats/observation over uniform at every
+`d`. That is the same order as the `(d-1)/2n` it costs merely to estimate `d`
+class frequencies. At `n_train = 1600, d = 64` the held-out log-loss is 4.137
+(truth), 4.159 (uniform), 4.184 (class frequencies), and 4.184 for the best
+xgboost round: xgboost initialises from the noisy frequencies and fits `d`
+unrelated per-class ensembles. Multinomial logistic regression, linear or
+spline, is also worse than uniform at `d >= 64` for every `C`, because its
+intercepts are unpenalised. The tuner correctly reports "stop after ~4
+rounds". A learner that shares strength across neighbouring labels (the `lin`
+pmf is a smooth ramp in the label index) would not have this problem. That is
+the same structure the test exploits, and it is item 2's problem. Until then,
+large-`d` simulation runs use `learner="oracle"`, which isolates the test from
+the regression.
+
+**Cost.** One replicate is dominated by the search, run `n_boot + 1` times. At
+`dy = 4` one ordinal search takes ~0.1 s (`dx = 16`), ~0.5 s (32), ~1.3 s
+(64) and ~16 s (256). The `Saturated` search is ~20x that. The dense `Sigma`
+is `(dx*dy)^2`, so symmetric `d` in the hundreds is out of reach whatever the
+speed. The applications are asymmetric (`dx` in the hundreds, `dy` a handful),
+which is why `dx` and `dy` are separate config axes.
+
 ## Testing
 
 `tests/` differential-tests every deterministic seam against the frozen R
@@ -216,11 +261,16 @@ paths. See `tests/fixtures/README.md` for the JSON conventions.
 - **Results are stale.** Every figure in `experiments/results-r-legacy/` came
   from R with cross-fitting. Nothing in the paper yet comes from this code; the
   grid needs re-running with `experiments/run.py`.
-- **`d` is not a real axis.** `dgp.py` is parametric in `d`, but every config is
-  hardcoded to `d = 8`. The motivating example is `dX = 30, dY = 10`.
-- **No tuner.** `experiments/tuning/` holds the frozen hyperparameters for
-  `n = 1000, d = 8`. The R script that produced them was cluster-specific and
-  was not ported, so a new `(n, d)` cannot currently be tuned.
+- **`d` beyond ~64 is compute-bound.** `dx`/`dy` are config axes and
+  `run_d_axis.py` runs the grid, but the search costs ~16 s per draw at
+  `dx = 256, dy = 4` (TODO item 8). The search-free comparators run at any
+  `dx`.
+- **No learner for large `d`.** See "Tuning, and what breaks as `d` grows":
+  at `n ~ 2000, d >= 64` both xgboost and multinomial logistic regression are
+  worse than uniform.
+- **`form_t_sigma` materialises the `n x dx*dy` product matrix.** At
+  application scale (`n ~ 7e4, dx*dy ~ 1e3`) that is ~1 GB, doubled by
+  `np.cov`. It will need row-chunking before item 4.
 - **Index convention differs from the paper.** The appendix orders `dXdY`-space
   with `k` fastest; the code uses `j` (X) fastest, inherited from R's Kronecker
   layout. Self-consistent, but update formulae (24)-(27) will not line up
