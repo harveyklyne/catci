@@ -14,7 +14,8 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from catci.search import greedy_search
+from catci.api import catci_test
+from catci.search import _greedy_search_loop, greedy_search, greedy_search_paths
 from catci.structure import Cyclic, Ordinal, Tree, TreeNode, make_binary_tree
 
 
@@ -262,3 +263,102 @@ def test_tree_rejects_malformed():
         Tree(TreeNode((1, 2), (TreeNode((1, 2), (leaf(1), leaf(2))),)))
     with pytest.raises(ValueError, match="partition"):
         Tree(TreeNode((1, 2, 3), (leaf(1), leaf(2))))
+    with pytest.raises(ValueError, match="1..2"):
+        Tree(TreeNode((2, 3), (leaf(2), leaf(3))))
+
+
+@pytest.mark.parametrize("parents,levels,msg", [
+    ({}, [], "non-empty"),
+    ({None: "X"}, [None], "None or NaN"),
+])
+def test_from_parents_rejects_degenerate(parents, levels, msg):
+    with pytest.raises(ValueError, match=msg):
+        Tree.from_parents(parents, levels)
+
+
+def test_from_parents_nan_parent_is_root():
+    # pandas gives NaN, not None, for a missing parent
+    t = Tree.from_parents({"a": "X", "b": "X", "c": float("nan")}, ["a", "b", "c"])
+    assert _shape(t.tree) == _shape(Tree.from_parents(
+        {"a": "X", "b": "X", "c": None}, ["a", "b", "c"]).tree)
+
+
+# --------------------------------------------------------------------------- #
+# Vectorised search with n-ary trees: the array mask, and label-count checks
+# --------------------------------------------------------------------------- #
+def _slots(partitions, d):
+    """Encode partitions as the vectorised search's (sizes, gid) slot arrays."""
+    sizes = np.zeros((len(partitions), d), dtype=np.int64)
+    gid = np.zeros((len(partitions), d), dtype=np.int64)
+    for b, partition in enumerate(partitions):
+        for grp in partition:
+            sizes[b, min(grp) - 1] = len(grp)
+            gid[b, np.asarray(grp) - 1] = min(grp) - 1
+    return sizes, gid
+
+
+def _mask_pairs(mask, partition):
+    slot = [min(g) - 1 for g in partition]
+    return sorted((slot.index(s) + 1, slot.index(t) + 1) for s, t in zip(*np.nonzero(mask)))
+
+
+@settings(max_examples=100, deadline=None)
+@given(d=st.integers(3, 30), seed=st.integers(0, 2**32 - 1), binary=st.booleans(),
+       choices=st.lists(st.integers(0, 10**6), min_size=30, max_size=30))
+def test_context_mask_matches_permitted_merges(d, seed, binary, choices):
+    # One batch holding every partition along a random path, so draws at different
+    # depths share a call. Binary trees are forced through the context mask too.
+    tree = make_binary_tree(d) if binary else _random_tree(list(range(1, d + 1)),
+                                                           np.random.default_rng(seed))
+    structure = Tree(tree)
+    path = _random_path(structure, d, choices)
+    masks = structure._context_mask(*_slots(path, d))
+    for mask, partition in zip(masks, path):
+        assert _mask_pairs(mask, partition) == structure.permitted_merges(partition)
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_nary_vectorised_matches_loop(seed):
+    rng = np.random.default_rng(100 + seed)
+    dx, dy = int(rng.integers(3, 12)), int(rng.integers(3, 9))
+    xs = Tree(_random_tree(list(range(1, dx + 1)), rng))
+    ys = Tree(_random_tree(list(range(1, dy + 1)), rng, max_arity=3))
+    T, Sigma = _random_TS(dx, dy, rng)
+    res, ref = greedy_search(T, Sigma, dx, dy, xs, ys), _greedy_search_loop(T, Sigma, dx, dy, xs, ys)
+    np.testing.assert_allclose(res.values, ref.values, rtol=1e-10, atol=1e-12)
+    assert res.partitions == ref.partitions
+    draws = np.linalg.cholesky(Sigma + 1e-9 * np.eye(dx * dy)) @ rng.standard_normal((dx * dy, 20))
+    paths = greedy_search_paths(draws, Sigma, dx, dy, xs, ys)
+    for b in range(draws.shape[1]):
+        np.testing.assert_allclose(paths[:, b], _greedy_search_loop(
+            draws[:, b], Sigma, dx, dy, xs, ys).values, rtol=1e-10, atol=1e-12)
+
+
+def test_tree_label_count_must_match():
+    # A tree over 6 labels used on a variable coded 1..4 (say levels 5, 6 unobserved)
+    # used to stop the n-ary search at 3 groups without complaint.
+    leaf = lambda k: TreeNode((k,), ())
+    tree = Tree(TreeNode((1, 2, 3, 4, 5, 6), (
+        TreeNode((1, 2), (leaf(1), leaf(2))),
+        TreeNode((3, 4, 5), (leaf(3), TreeNode((4, 5), (leaf(4), leaf(5))))),
+        leaf(6))))
+    T, Sigma = _random_TS(4, 3, np.random.default_rng(0))
+    for search in (greedy_search, _greedy_search_loop, greedy_search_paths):
+        with pytest.raises(ValueError, match="6 labels but the variable has 4"):
+            search(T, Sigma, 4, 3, tree, Ordinal())
+
+
+def test_catci_test_with_taxonomy_tree():
+    rng = np.random.default_rng(0)
+    levels = [("code", c) for c in ["250.0", "401.9", "250.1", "428.0", "V58.6"]]
+    xs = Tree.from_parents(ICD, levels)
+    n, dx, dy = 400, 5, 7
+    f = rng.dirichlet(np.ones(dx), n)
+    g = rng.dirichlet(np.ones(dy), n)
+    x = np.array([rng.choice(dx, p=p) + 1 for p in f])
+    y = np.array([rng.choice(dy, p=p) + 1 for p in g])
+    res = catci_test(x, y, xs, Cyclic(), f=f, g=g, n_boot=50, rng=rng)
+    assert 0.0 <= res.p_value <= 1.0
+    assert len(res.partitions[-1]["x"]) == 2 and len(res.partitions[-1]["y"]) == 2
+    for p in res.partitions:
+        _assert_arcs_in_cyclic_order(p["y"], dy)
