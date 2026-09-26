@@ -182,10 +182,14 @@ def _gaussian_pvalues(make_search, seed, reps=400):
 
 
 def _check_uniform(pvals):
-    assert abs(pvals.mean() - 0.5) < 0.06
+    # 3 binomial SEs per level: a flat 0.03 is only ~1.5 SE at alpha = 0.2 and 400
+    # reps, so an exact test failed it about one run in eight.
+    n = pvals.size
+    assert abs(pvals.mean() - 0.5) < 3 * np.sqrt(1 / 12 / n)
     for alpha in (0.05, 0.10, 0.20):
         rate = float(np.mean(pvals < alpha))
-        assert abs(rate - alpha) < 0.03, f"rejection rate {rate:.3f} at alpha={alpha}"
+        tol = 3 * np.sqrt(alpha * (1 - alpha) / n)
+        assert abs(rate - alpha) < tol, f"rejection rate {rate:.3f} at alpha={alpha}"
 
 
 def test_beam_calibrates():
