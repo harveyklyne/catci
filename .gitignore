@@ -10,6 +10,7 @@ dist/
 # Working notes are scratch by default; tracked docs are opted in below.
 *.md
 !README.md
+!SEARCH.md
 !tests/fixtures/README.md
 
 # Simulation output (regenerate with experiments/run.py)
