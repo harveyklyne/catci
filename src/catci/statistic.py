@@ -18,11 +18,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.stats import chi2
+from scipy import special
 
 from . import merging
 
-__all__ = ["ApproxChi", "ChiState", "euclid", "max_abs", "mgcm"]
+__all__ = ["ApproxChi", "ChiState", "approx_chi_array", "euclid", "max_abs", "mgcm"]
 
 
 @dataclass(frozen=True)
@@ -62,9 +62,18 @@ class ApproxChi:
 
 def approx_chi_statistic(normsq: float, tr: float, tr2: float) -> float:
     """``pchisq(normsq / (tr2/tr), df = tr^2 / tr2)`` -- Box (1954)."""
+    return float(approx_chi_array(normsq, tr, tr2))
+
+
+def approx_chi_array(normsq, tr, tr2):
+    """Elementwise :func:`approx_chi_statistic`, for every candidate at once.
+
+    ``special.chdtr`` is the kernel ``scipy.stats.chi2.cdf`` calls, so this is
+    bit-identical to it without the argument-checking overhead.
+    """
     g = tr2 / tr
     h = tr ** 2 / tr2
-    return float(chi2.cdf(normsq / g, df=h))
+    return special.chdtr(h, normsq / g)
 
 
 # --------------------------------------------------------------------------- #

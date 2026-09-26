@@ -40,13 +40,14 @@ def catci_test(
     n_boot: int = 100,
     normalise: bool = True,
     rng: Optional[np.random.Generator] = None,
+    n_jobs: int = 1,
 ) -> CatciResult:
     """Test conditional independence ``X _||_ Y | Z`` for categorical ``X, Y``.
 
     Provide propensities directly (``f``, ``g`` -- the oracle path) or a
     ``learner`` plus ``z`` to fit them on the full sample. Returns the p-value
     together with the observed statistic path and the partitions the search
-    visited.
+    visited. ``n_jobs`` threads share the bootstrap searches (``-1`` = all cores).
     """
     x = np.asarray(x)
     y = np.asarray(y)
@@ -67,6 +68,6 @@ def catci_test(
     observed = greedy_search(ts.T_vector, ts.Sigma, dx, dy, x_structure, y_structure, statistic)
     p = adaptive_pvalue(
         ts.T_vector, ts.Sigma, dx, dy, x_structure, y_structure,
-        n_boot=n_boot, statistic=statistic, rng=rng,
+        n_boot=n_boot, statistic=statistic, rng=rng, n_jobs=n_jobs,
     )
     return CatciResult(p_value=p, statistics=np.asarray(observed.values), partitions=observed.partitions)

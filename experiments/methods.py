@@ -19,9 +19,9 @@ from scipy.stats import chi2, norm
 
 from catci.bootstrap import bootstrap_T
 from catci.calibrate import bonferroni_pvalue, double_bootstrap_pvalue
-from catci.statistic import ApproxChi, euclid, max_abs, mgcm
+from catci.statistic import euclid, max_abs, mgcm
 from catci.gcm import form_t_sigma
-from catci.search import greedy_search
+from catci.search import greedy_search_paths
 from catci.structure import Ordinal, Saturated, Tree
 
 SEARCHES = ("tree", "ordinal", "greedy")
@@ -55,8 +55,8 @@ class Fitted:
 # --------------------------------------------------------------------------- #
 # Adaptive methods (shared bootstrap draws, matching R evaluate_sim)
 # --------------------------------------------------------------------------- #
-def _statistic_fn(name, dx, dy, statistic):
-    """A function (T_vector, Sigma) -> statistic (scalar for depth-0, vector for a search)."""
+def _statistic_paths(name, dx, dy, T, Sigma, n_jobs=1):
+    """Statistic paths ``(L, B)`` for every column of ``T`` (``L = 1`` for depth-0)."""
     search_structs = {
         "tree": lambda: (Tree.binary(dx), Tree.binary(dy)),
         "ordinal": lambda: (Ordinal(), Ordinal()),
@@ -65,30 +65,26 @@ def _statistic_fn(name, dx, dy, statistic):
     name = name.removesuffix("_bonf")  # the calibration differs, the statistic path does not
     if name in search_structs:
         xs, ys = search_structs[name]()
-
-        def fn(T_vec, Sigma):
-            return np.asarray(greedy_search(T_vec, Sigma, dx, dy, xs, ys, statistic).values)
-
-        return fn
+        return greedy_search_paths(T, Sigma, dx, dy, xs, ys, n_jobs=n_jobs)
     scalar = {"max": max_abs, "euclid": euclid, "mGCM": mgcm}[name]
-    return lambda T_vec, Sigma: float(scalar(T_vec, Sigma))
+    return np.array([[scalar(T[:, b], Sigma) for b in range(T.shape[1])]])
 
 
-def adaptive_pvalues(fitted: Fitted, method_names, n_boot: int, rng: np.random.Generator) -> dict:
+def adaptive_pvalues(fitted: Fitted, method_names, n_boot: int, rng: np.random.Generator,
+                     n_jobs: int = 1) -> dict:
     """P-values for the requested adaptive methods, sharing one set of bootstrap draws."""
-    statistic = ApproxChi()
     Sigma = fitted.Sigma
     boot_T = bootstrap_T(Sigma, n_boot, rng)  # (p, n_boot)
+    T_all = np.column_stack([fitted.T_vector, boot_T])  # observed is column 0
 
-    out = {}
+    out, cache = {}, {}
     for name in method_names:
-        fn = _statistic_fn(name, fitted.dx, fitted.dy, statistic)
+        base = name.removesuffix("_bonf")
+        if base not in cache:  # `x` and `x_bonf` share one statistic path
+            cache[base] = _statistic_paths(base, fitted.dx, fitted.dy, T_all, Sigma, n_jobs)
+        paths = cache[base]
         calibrate = bonferroni_pvalue if name.endswith("_bonf") else double_bootstrap_pvalue
-        statistics = np.atleast_1d(fn(fitted.T_vector, Sigma))
-        statistics_boot = np.column_stack(
-            [np.atleast_1d(fn(boot_T[:, b], Sigma)) for b in range(n_boot)]
-        )
-        out[name] = calibrate(statistics, statistics_boot, rng)
+        out[name] = calibrate(paths[:, 0], paths[:, 1:], rng)
     return out
 
 

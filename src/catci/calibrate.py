@@ -35,7 +35,7 @@ from __future__ import annotations
 import numpy as np
 
 from .bootstrap import bootstrap_T
-from .search import greedy_search
+from .search import _greedy_search_loop, greedy_search_paths
 from .statistic import ApproxChi
 
 __all__ = ["double_bootstrap_pvalue", "bonferroni_pvalue", "adaptive_pvalue"]
@@ -129,24 +129,29 @@ def adaptive_pvalue(
     n_boot: int = 100,
     statistic=None,
     rng: np.random.Generator | None = None,
+    n_jobs: int = 1,
 ) -> float:
     """Run the greedy search on the observed and bootstrap ``T`` and calibrate.
 
     The bootstrap draws ``T ~ N(0, Sigma)`` share the observed ``Sigma``; each is
     put through the same greedy search, and the observed statistic path is compared
-    against the bootstrap paths by :func:`double_bootstrap_pvalue`.
+    against the bootstrap paths by :func:`double_bootstrap_pvalue`. All ``n_boot + 1``
+    searches run as one batch (:func:`~catci.search.greedy_search_paths`);
+    ``n_jobs`` threads split it.
     """
     if statistic is None:
         statistic = ApproxChi()
     if rng is None:
         rng = np.random.default_rng()
 
-    def path(T_vec: np.ndarray) -> np.ndarray:
-        return np.asarray(
-            greedy_search(T_vec, Sigma, dx, dy, x_structure, y_structure, statistic).values
-        )
-
-    statistics = path(T_vector)
     boot_T = bootstrap_T(Sigma, n_boot, rng)  # (dx*dy, n_boot)
-    statistics_boot = np.column_stack([path(boot_T[:, b]) for b in range(n_boot)])  # (L, n_boot)
-    return double_bootstrap_pvalue(statistics, statistics_boot, rng)
+    T_all = np.column_stack([np.asarray(T_vector, dtype=float), boot_T])
+    if isinstance(statistic, ApproxChi):
+        paths = greedy_search_paths(T_all, Sigma, dx, dy, x_structure, y_structure, n_jobs=n_jobs)
+    else:
+        paths = np.column_stack([
+            _greedy_search_loop(T_all[:, b], Sigma, dx, dy, x_structure, y_structure,
+                                statistic).values
+            for b in range(T_all.shape[1])
+        ])
+    return double_bootstrap_pvalue(paths[:, 0], paths[:, 1:], rng)
