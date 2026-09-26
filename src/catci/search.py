@@ -168,14 +168,15 @@ def evaluate_path(
     partition = _initial_partition(dx, dy)
 
     result = SearchResult()
-    state = statistic.init(T_vector, Sigma)
-    result.values.append(statistic.value(state))
+    result.values.append(statistic.value(statistic.init(T_vector, Sigma)))
     result.partitions.append(_copy_partition(partition))
     for merge in merges:
         dimension, i, j = merge
         index1 = merging.get_index(dimension, i, dims[1], dims[2])
         index2 = merging.get_index(dimension, j, dims[1], dims[2])
-        state = statistic.update(state, T_vector, Sigma, index1, index2)
+        # Re-init from the merged (T, Sigma) each level, as greedy does: carrying the
+        # state forward instead drifts from greedy's values in the last ulp.
+        state = statistic.update(statistic.init(T_vector, Sigma), T_vector, Sigma, index1, index2)
         result.values.append(statistic.value(state))
         result.merges.append(merge)
         partition, dims = _apply(partition, dims, merge)
