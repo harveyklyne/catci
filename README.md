@@ -238,6 +238,32 @@ the same structure the test exploits, and it is item 2's problem. Until then,
 large-`d` simulation runs use `learner="oracle"`, which isolates the test from
 the regression.
 
+**Does the merging advantage widen with `d`? Yes (pilot).** Setup: `lin_lin_step`,
+`n = 2000`, `dy = 4`, oracle propensities, `n_boot = 200`, `alpha = 0.05`, 100
+reps per ordinal cell and 200 per comparator cell. The per-observation signal
+is flat in `d` for `lin`. Reproduce with `run_d_axis.py` and `report_pilot.py`.
+
+| strength | method | dx=8 | 16 | 32 | 64 | 128 |
+|---|---|---:|---:|---:|---:|---:|
+| 0 (size) | ordinal | 0.040 | 0.030 | 0.040 | 0.060 | 0.040 |
+| | euclid | 0.025 | 0.045 | 0.020 | 0.025 | 0.030 |
+| | max | 0.025 | 0.035 | 0.040 | 0.010 | 0.045 |
+| | chi_sq | 0.040 | 0.090 | 0.110 | **0.405** | **0.995** |
+| | mGCM | 0.055 | 0.080 | 0.105 | **0.320** | **0.640** |
+| 0.6 | ordinal | **0.640** | **0.600** | **0.570** | **0.490** | **0.460** |
+| | euclid | 0.450 | 0.305 | 0.230 | 0.135 | 0.065 |
+| | max | 0.215 | 0.100 | 0.070 | 0.070 | 0.035 |
+| 1.2 | ordinal | **1.000** | **1.000** | **1.000** | **0.980** | **0.970** |
+| | euclid | 0.995 | 0.975 | 0.870 | 0.640 | 0.410 |
+| | max | 0.715 | 0.430 | 0.245 | 0.145 | 0.095 |
+
+Ordinal search stays calibrated and loses little power as `dx` grows 16-fold.
+At strength 0.6, its power over Euclid, the best calibrated unmerged test,
+grows from 1.4x to 7x. The pseudo-inverse `chi_sq` competitor and `mGCM` lose
+size control as `dx*dy` approaches `n`, even with oracle propensities (TODO
+0a's `rank(Sigma)/n` effect), so their power at large `dx` is not
+interpretable. `ankan` has no power against this interaction at any `d`.
+
 **Cost.** One replicate is dominated by the search over all `n_boot + 1`
 paths. With the vectorised search, a whole replicate's ordinal paths at
 `dy = 4, n_boot = 200` take ~1.4 s (`dx = 32`), ~6 s (64), ~32 s (128) and
