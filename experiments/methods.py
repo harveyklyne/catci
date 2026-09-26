@@ -2,8 +2,9 @@
 
 Covers the adaptive catci tests (tree/ordinal/max/euclid/mGCM, calibrated by the
 shared minP double bootstrap), their ``_bonf`` counterparts (the same statistic
-path under simple FWER control, as a comparator for the minP calibration) and the
-competitors (ankan, chi_sq, multinomial). This
+path under simple FWER control, as a comparator for the minP calibration), their
+``_exact`` counterparts (the exact chi-square CDF in place of Box's approximation,
+~30x slower, to show the approximation costs nothing) and the competitors (ankan, chi_sq, multinomial). This
 replaces the R split across ``formulate_statistics`` (three unconditional
 competitors) and ``evaluate_sim`` (the calibrated ones): here every method is an
 explicit registry entry the runner asks for, so an expensive competitor is paid
@@ -19,7 +20,7 @@ from scipy.stats import chi2, norm
 
 from catci.bootstrap import bootstrap_T
 from catci.calibrate import bonferroni_pvalue, double_bootstrap_pvalue
-from catci.statistic import ApproxChi, euclid, max_abs, mgcm
+from catci.statistic import ApproxChi, ExactChi, euclid, max_abs, mgcm
 from catci.gcm import form_t_sigma
 from catci.search import greedy_search
 from catci.structure import Ordinal, Saturated, Tree
@@ -28,7 +29,15 @@ SEARCHES = ("tree", "ordinal", "greedy")
 # Each search also has a `<name>_bonf` variant: same statistic path, simple FWER
 # control instead of the minP calibration. Note its resolution floor is L/(n_boot+1),
 # so it cannot reject at alpha unless n_boot >= L/alpha (L = dx + dy - 3).
-ADAPTIVE = SEARCHES + tuple(f"{s}_bonf" for s in SEARCHES) + ("max", "euclid", "mGCM")
+# And a `<name>_exact` variant: minP-calibrated, but every coarsening is scored by
+# the exact weighted-chi-square CDF instead of Box's approximation. Same draws, so
+# the pair is a paired comparison.
+ADAPTIVE = (
+    SEARCHES
+    + tuple(f"{s}_bonf" for s in SEARCHES)
+    + tuple(f"{s}_exact" for s in SEARCHES)
+    + ("max", "euclid", "mGCM")
+)
 COMPETITORS = ("ankan", "chi_sq", "multinomial")
 
 
@@ -55,14 +64,16 @@ class Fitted:
 # --------------------------------------------------------------------------- #
 # Adaptive methods (shared bootstrap draws, matching R evaluate_sim)
 # --------------------------------------------------------------------------- #
-def _statistic_fn(name, dx, dy, statistic):
+def _statistic_fn(name, dx, dy, statistic_by_kind):
     """A function (T_vector, Sigma) -> statistic (scalar for depth-0, vector for a search)."""
     search_structs = {
         "tree": lambda: (Tree.binary(dx), Tree.binary(dy)),
         "ordinal": lambda: (Ordinal(), Ordinal()),
         "greedy": lambda: (Saturated(), Saturated()),
     }
-    name = name.removesuffix("_bonf")  # the calibration differs, the statistic path does not
+    statistic = statistic_by_kind["exact" if name.endswith("_exact") else "approx"]
+    # `_bonf` changes the calibration, `_exact` the statistic; neither the search.
+    name = name.removesuffix("_bonf").removesuffix("_exact")
     if name in search_structs:
         xs, ys = search_structs[name]()
 
@@ -76,13 +87,15 @@ def _statistic_fn(name, dx, dy, statistic):
 
 def adaptive_pvalues(fitted: Fitted, method_names, n_boot: int, rng: np.random.Generator) -> dict:
     """P-values for the requested adaptive methods, sharing one set of bootstrap draws."""
-    statistic = ApproxChi()
+    # One instance each, shared across searches: ExactChi's spectrum cache is keyed
+    # on (Sigma, partition), so every draw and every structure can reuse it.
+    statistic_by_kind = {"approx": ApproxChi(), "exact": ExactChi()}
     Sigma = fitted.Sigma
     boot_T = bootstrap_T(Sigma, n_boot, rng)  # (p, n_boot)
 
     out = {}
     for name in method_names:
-        fn = _statistic_fn(name, fitted.dx, fitted.dy, statistic)
+        fn = _statistic_fn(name, fitted.dx, fitted.dy, statistic_by_kind)
         calibrate = bonferroni_pvalue if name.endswith("_bonf") else double_bootstrap_pvalue
         statistics = np.atleast_1d(fn(fitted.T_vector, Sigma))
         statistics_boot = np.column_stack(
