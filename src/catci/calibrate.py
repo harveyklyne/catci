@@ -35,7 +35,7 @@ from __future__ import annotations
 import numpy as np
 
 from .bootstrap import bootstrap_T
-from .search import greedy_search
+from .search import MergeSearch
 from .statistic import ApproxChi
 
 __all__ = ["double_bootstrap_pvalue", "bonferroni_pvalue", "adaptive_pvalue"]
@@ -129,24 +129,31 @@ def adaptive_pvalue(
     n_boot: int = 100,
     statistic=None,
     rng: np.random.Generator | None = None,
+    search=None,
 ) -> float:
-    """Run the greedy search on the observed and bootstrap ``T`` and calibrate.
+    """Run the label search on the observed and bootstrap ``T`` and calibrate.
 
     The bootstrap draws ``T ~ N(0, Sigma)`` share the observed ``Sigma``; each is
-    put through the same greedy search, and the observed statistic path is compared
+    put through the same search, and the observed statistic path is compared
     against the bootstrap paths by :func:`double_bootstrap_pvalue`.
+
+    ``search`` picks the direction -- :class:`~catci.search.MergeSearch` (the
+    default, the paper's Algorithm 1) or :class:`~catci.search.SplitSearch`. It
+    is asked to ``prepare`` against the shared ``Sigma`` once, so a direction
+    with per-``Sigma`` setup pays for it here rather than per draw.
     """
     if statistic is None:
         statistic = ApproxChi()
     if rng is None:
         rng = np.random.default_rng()
+    if search is None:
+        search = MergeSearch()
 
-    def path(T_vec: np.ndarray) -> np.ndarray:
-        return np.asarray(
-            greedy_search(T_vec, Sigma, dx, dy, x_structure, y_structure, statistic).values
-        )
+    path = search.prepare(Sigma, dx, dy, x_structure, y_structure, statistic)
 
-    statistics = path(T_vector)
+    statistics = np.asarray(path(T_vector).values)
     boot_T = bootstrap_T(Sigma, n_boot, rng)  # (dx*dy, n_boot)
-    statistics_boot = np.column_stack([path(boot_T[:, b]) for b in range(n_boot)])  # (L, n_boot)
+    statistics_boot = np.column_stack(
+        [path(boot_T[:, b]).values for b in range(n_boot)]
+    )  # (L, n_boot)
     return double_bootstrap_pvalue(statistics, statistics_boot, rng)

@@ -5,6 +5,14 @@ Ports the load-bearing update formulae (24)-(27) from the R package
 arguments and is pinned by the ``rank_one_updates`` fixture and, transitively,
 by ``search_paths``.
 
+``split_*`` invert the same three formulae for :func:`~catci.search.divisive_search`,
+which walks the partition lattice the other way. Splitting a group is exactly
+un-doing the merge that would put it back, so (24)-(27) rearrange to subtract
+rather than add. What changes is the input they need: a merge reads the current
+``(T, Sigma)``, whereas a split reads only the two *new* rows of the finer
+``(T, Sigma)`` -- ``Ta``/``Tb`` and ``Sa``/``Sb`` below -- which
+:mod:`catci.blocks` supplies without ever materialising the finer matrices.
+
 Index convention (matches the R package and the fixtures): the length ``dx*dy``
 vector is ordered ``(1,1),(2,1),...,(dx,1),(1,2),...,(dx,dy)`` -- X fastest.
 Labels are 1-based on the public surface; positions are 0-based numpy indices.
@@ -23,6 +31,9 @@ __all__ = [
     "update_normsq",
     "update_tr",
     "update_tr2",
+    "split_normsq",
+    "split_tr",
+    "split_tr2",
 ]
 
 
@@ -102,3 +113,39 @@ def update_tr2(tr2: float, Sigma: np.ndarray, index1: np.ndarray, index2: np.nda
         Sigma[np.ix_(i1, i2)] * Sigma[np.ix_(i2, i1)]
     )
     return tr2 + 4.0 * cross + 2.0 * block
+
+
+# --------------------------------------------------------------------------- #
+# Inverse formulae: refining a partition (see module docstring)
+# --------------------------------------------------------------------------- #
+# A split replaces one group by two, ``a`` then ``b``. The arguments describe
+# the *finer* partition: ``Ta``, ``Tb`` are its entries for the new groups
+# (length ``r``, one per group of the other dimension), and ``Sa``, ``Sb`` are
+# the corresponding row blocks of its covariance, each ``(r, m)`` over all ``m``
+# entries of the finer partition. ``cols_a`` and ``cols_b`` pick out the columns
+# of those blocks belonging to ``a`` and to ``b``, in the same order as the rows.
+
+
+def split_normsq(normsq: float, Ta: np.ndarray, Tb: np.ndarray) -> float:
+    """Update ``||T||^2`` after splitting a group. Inverse of formula (24)."""
+    return normsq - 2.0 * float(np.sum(Ta * Tb))
+
+
+def split_tr(tr: float, Sa: np.ndarray, cols_b: np.ndarray) -> float:
+    """Update ``tr(Sigma)`` after splitting a group. Inverse of formula (25)."""
+    return tr - 2.0 * float(np.sum(Sa[np.arange(Sa.shape[0]), cols_b]))
+
+
+def split_tr2(
+    tr2: float,
+    Sa: np.ndarray,
+    Sb: np.ndarray,
+    cols_a: np.ndarray,
+    cols_b: np.ndarray,
+) -> float:
+    """Update ``tr(Sigma^2)`` after splitting a group. Inverse of formulae (26)-(27)."""
+    cross = float(np.sum(Sa * Sb))
+    Saa, Sab = Sa[:, cols_a], Sa[:, cols_b]
+    Sba, Sbb = Sb[:, cols_a], Sb[:, cols_b]
+    block = float(np.sum(Saa * Sbb) + np.sum(Sab * Sba))
+    return tr2 - 4.0 * cross - 2.0 * block

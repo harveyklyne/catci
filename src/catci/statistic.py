@@ -1,7 +1,8 @@
 """Test statistics as ``init`` / ``update`` / ``value`` triples.
 
 A statistic carries just enough state to be updated cheaply after a rank-one
-merge. ``ApproxChi`` is the one live statistic (Box's chi-square CDF); the
+merge, or after the split that undoes one (``ApproxChi.split``, used by
+:func:`~catci.search.divisive_search`). ``ApproxChi`` is the one live statistic (Box's chi-square CDF); the
 non-adaptive comparators (``euclid``, ``max``, ``mGCM``) are depth-0 value
 functions -- the same code path at search depth 0, which is what the paper
 claims they are. Deliberately kept small: no statistic zoo.
@@ -18,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.stats import chi2
+from scipy.special import gammainc
 
 from . import merging
 
@@ -56,15 +57,44 @@ class ApproxChi:
             tr2=merging.update_tr2(state.tr2, Sigma, index1, index2),
         )
 
+    def split(
+        self,
+        state: ChiState,
+        Ta: np.ndarray,
+        Tb: np.ndarray,
+        Sa: np.ndarray,
+        Sb: np.ndarray,
+        cols_a: np.ndarray,
+        cols_b: np.ndarray,
+    ) -> ChiState:
+        """State after *refining* the partition -- the counterpart of :meth:`update`.
+
+        ``update`` merges two groups and reads the current ``(T, Sigma)``; this
+        splits one group in two and reads only the new rows. See
+        :mod:`catci.merging` for what the arguments mean.
+        """
+        return ChiState(
+            normsq=merging.split_normsq(state.normsq, Ta, Tb),
+            tr=merging.split_tr(state.tr, Sa, cols_b),
+            tr2=merging.split_tr2(state.tr2, Sa, Sb, cols_a, cols_b),
+        )
+
     def value(self, state: ChiState) -> float:
         return approx_chi_statistic(state.normsq, state.tr, state.tr2)
 
 
 def approx_chi_statistic(normsq: float, tr: float, tr2: float) -> float:
-    """``pchisq(normsq / (tr2/tr), df = tr^2 / tr2)`` -- Box (1954)."""
+    """``pchisq(normsq / (tr2/tr), df = tr^2 / tr2)`` -- Box (1954).
+
+    Written as the regularised lower incomplete gamma rather than
+    ``chi2.cdf``, which it equals bit-for-bit: the chi-square CDF *is*
+    ``gammainc(df/2, x/2)``, but reaching it through ``scipy.stats`` costs ~80x
+    more per scalar call than calling it directly. Both searches evaluate this
+    once per candidate merge or split, so it is the hottest line in the package.
+    """
     g = tr2 / tr
     h = tr ** 2 / tr2
-    return float(chi2.cdf(normsq / g, df=h))
+    return float(gammainc(h / 2.0, normsq / g / 2.0))
 
 
 # --------------------------------------------------------------------------- #
