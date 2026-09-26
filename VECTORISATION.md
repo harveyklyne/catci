@@ -369,3 +369,9 @@ wall time on this 6-core machine (idle), against ~35 min for the loop.
   factored form in the memory section above is still the only route; it is
   unverified.
 * `bootstrap.matrix_sqrt` (`O(p^3)`, once per test) is still untouched.
+* **`ExactChi` (merged from master 2026-09-26) is not vectorised.** It needs the
+  spectrum of every candidate's merged covariance, which has no rank-one update,
+  so it keeps the per-candidate loop (`_greedy_search_loop`, with master's
+  context hooks) through `greedy_search`, `adaptive_pvalue` and the `*_exact`
+  registry entries. Its cost is dominated by the CDF evaluation per draw anyway
+  (`EXACT_CRITERIA_NOTES.md`), so batching the search would not change its order.

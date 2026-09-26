@@ -2,8 +2,9 @@
 
 Covers the adaptive catci tests (tree/ordinal/max/euclid/mGCM, calibrated by the
 shared minP double bootstrap), their ``_bonf`` counterparts (the same statistic
-path under simple FWER control, as a comparator for the minP calibration) and the
-competitors (ankan, chi_sq, multinomial). This
+path under simple FWER control, as a comparator for the minP calibration), their
+``_exact`` counterparts (the exact chi-square CDF in place of Box's approximation,
+~30x slower, to show the approximation costs nothing) and the competitors (ankan, chi_sq, multinomial). This
 replaces the R split across ``formulate_statistics`` (three unconditional
 competitors) and ``evaluate_sim`` (the calibrated ones): here every method is an
 explicit registry entry the runner asks for, so an expensive competitor is paid
@@ -19,16 +20,24 @@ from scipy.stats import chi2, norm
 
 from catci.bootstrap import bootstrap_T
 from catci.calibrate import bonferroni_pvalue, double_bootstrap_pvalue
-from catci.statistic import euclid, max_abs, mgcm
+from catci.statistic import ExactChi, euclid, max_abs, mgcm
 from catci.gcm import form_t_sigma
-from catci.search import greedy_search_paths
+from catci.search import greedy_search, greedy_search_paths
 from catci.structure import Ordinal, Saturated, Tree
 
 SEARCHES = ("tree", "ordinal", "greedy")
 # Each search also has a `<name>_bonf` variant: same statistic path, simple FWER
 # control instead of the minP calibration. Note its resolution floor is L/(n_boot+1),
 # so it cannot reject at alpha unless n_boot >= L/alpha (L = dx + dy - 3).
-ADAPTIVE = SEARCHES + tuple(f"{s}_bonf" for s in SEARCHES) + ("max", "euclid", "mGCM")
+# And a `<name>_exact` variant: minP-calibrated, but every coarsening is scored by
+# the exact weighted-chi-square CDF instead of Box's approximation. Same draws, so
+# the pair is a paired comparison.
+ADAPTIVE = (
+    SEARCHES
+    + tuple(f"{s}_bonf" for s in SEARCHES)
+    + tuple(f"{s}_exact" for s in SEARCHES)
+    + ("max", "euclid", "mGCM")
+)
 COMPETITORS = ("ankan", "chi_sq", "multinomial")
 
 
@@ -55,17 +64,24 @@ class Fitted:
 # --------------------------------------------------------------------------- #
 # Adaptive methods (shared bootstrap draws, matching R evaluate_sim)
 # --------------------------------------------------------------------------- #
-def _statistic_paths(name, dx, dy, T, Sigma, n_jobs=1):
-    """Statistic paths ``(L, B)`` for every column of ``T`` (``L = 1`` for depth-0)."""
+def _statistic_paths(name, dx, dy, T, Sigma, exact, n_jobs=1):
+    """Statistic paths ``(L, B)`` for every column of ``T`` (``L = 1`` for depth-0).
+
+    ``name`` is a base name (no ``_bonf`` / ``_exact`` suffix). The approximate
+    statistic runs as one batched search; ``exact`` (an :class:`ExactChi`, shared so
+    its spectrum cache spans draws and structures) runs the per-draw loop.
+    """
     search_structs = {
         "tree": lambda: (Tree.binary(dx), Tree.binary(dy)),
         "ordinal": lambda: (Ordinal(), Ordinal()),
         "greedy": lambda: (Saturated(), Saturated()),
     }
-    name = name.removesuffix("_bonf")  # the calibration differs, the statistic path does not
     if name in search_structs:
         xs, ys = search_structs[name]()
-        return greedy_search_paths(T, Sigma, dx, dy, xs, ys, n_jobs=n_jobs)
+        if exact is None:
+            return greedy_search_paths(T, Sigma, dx, dy, xs, ys, n_jobs=n_jobs)
+        return np.column_stack([greedy_search(T[:, b], Sigma, dx, dy, xs, ys, exact).values
+                                for b in range(T.shape[1])])
     scalar = {"max": max_abs, "euclid": euclid, "mGCM": mgcm}[name]
     return np.array([[scalar(T[:, b], Sigma) for b in range(T.shape[1])]])
 
@@ -73,16 +89,22 @@ def _statistic_paths(name, dx, dy, T, Sigma, n_jobs=1):
 def adaptive_pvalues(fitted: Fitted, method_names, n_boot: int, rng: np.random.Generator,
                      n_jobs: int = 1) -> dict:
     """P-values for the requested adaptive methods, sharing one set of bootstrap draws."""
+    # One instance, shared across searches: ExactChi's spectrum cache is keyed on
+    # (Sigma, partition), so every draw and every structure can reuse it.
+    exact_statistic = ExactChi()
     Sigma = fitted.Sigma
     boot_T = bootstrap_T(Sigma, n_boot, rng)  # (p, n_boot)
     T_all = np.column_stack([fitted.T_vector, boot_T])  # observed is column 0
 
     out, cache = {}, {}
     for name in method_names:
-        base = name.removesuffix("_bonf")
-        if base not in cache:  # `x` and `x_bonf` share one statistic path
-            cache[base] = _statistic_paths(base, fitted.dx, fitted.dy, T_all, Sigma, n_jobs)
-        paths = cache[base]
+        # `_bonf` changes the calibration, `_exact` the statistic; neither the search.
+        base = name.removesuffix("_bonf").removesuffix("_exact")
+        key = (base, name.endswith("_exact") and base in SEARCHES)  # depth-0 scalars have no exact variant
+        if key not in cache:  # `x` and `x_bonf` share one statistic path
+            cache[key] = _statistic_paths(base, fitted.dx, fitted.dy, T_all, Sigma,
+                                          exact_statistic if key[1] else None, n_jobs)
+        paths = cache[key]
         calibrate = bonferroni_pvalue if name.endswith("_bonf") else double_bootstrap_pvalue
         out[name] = calibrate(paths[:, 0], paths[:, 1:], rng)
     return out

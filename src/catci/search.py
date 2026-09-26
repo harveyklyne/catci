@@ -569,12 +569,21 @@ def _greedy_search_loop(
     key = {1: "x", 2: "y"}
     dims = {1: dx, 2: dy}
 
+    # Statistics that cannot be updated from summary quantities alone (ExactChi)
+    # need to know *which* candidate they are scoring, to key a cache on. Opt-in,
+    # so the ApproxChi path is exactly what it was.
+    wants_context = getattr(statistic, "wants_context", False)
+    if wants_context:
+        statistic.begin_search(Sigma)
+
     result = SearchResult()
     result.values.append(statistic.value(statistic.init(T_vector, Sigma)))
     result.partitions.append(_copy_partition(partition))
 
     while dims[1] > 2 or dims[2] > 2:
         base_state = statistic.init(T_vector, Sigma)
+        if wants_context:
+            statistic.begin_level(partition)
 
         best = None  # (value, dimension, i, j, index1, index2)
         for dimension in (1, 2):
@@ -582,7 +591,12 @@ def _greedy_search_loop(
             for (i, j) in structures[dimension].permitted_merges(groups):
                 index1 = merging.get_index(dimension, i, dims[1], dims[2])
                 index2 = merging.get_index(dimension, j, dims[1], dims[2])
-                state = statistic.update(base_state, T_vector, Sigma, index1, index2)
+                if wants_context:
+                    state = statistic.update(
+                        base_state, T_vector, Sigma, index1, index2, context=(dimension, i, j)
+                    )
+                else:
+                    state = statistic.update(base_state, T_vector, Sigma, index1, index2)
                 value = statistic.value(state)
                 # strict '>' keeps the first candidate in loop order on ties (R which.max).
                 if best is None or value > best[0]:
