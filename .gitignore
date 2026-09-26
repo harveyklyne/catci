@@ -12,6 +12,7 @@ dist/
 !README.md
 !tests/fixtures/README.md
 !MINP.md
+!TEXT.md
 
 # Simulation output (regenerate with experiments/run.py)
 experiments/results/
