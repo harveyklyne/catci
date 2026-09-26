@@ -36,7 +36,7 @@ def size_table(settings, learners):
     for setting in settings:
         frames = {}
         for learner in learners:
-            stem = f"size_{setting}" + ("" if learner == "xgb" else f"__{learner}")
+            stem = f"size_{setting}__{learner}"
             df = _load(stem)
             if df is not None:
                 frames[learner] = df
@@ -63,7 +63,7 @@ def size_table(settings, learners):
 def power_table(configs, learners=("xgb", "mlp")):
     print("\n=== POWER: rejection rate at alpha = 0.05, paired on identical data ===")
     for cfg in configs:
-        a = _load(cfg)
+        a = _load(f"{cfg}__{learners[0]}")
         b = _load(f"{cfg}__{learners[1]}")
         if a is None or b is None:
             continue

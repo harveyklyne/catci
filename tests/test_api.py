@@ -28,7 +28,25 @@ def test_requires_propensities_or_learner():
         catci_test(x, y, Ordinal(), Ordinal())
     except ValueError:
         return
-    raise AssertionError("expected ValueError when neither (f,g) nor (learner,z) given")
+    raise AssertionError("expected ValueError when neither (f,g) nor z given")
+
+
+def test_z_alone_defaults_to_the_mlp_learner():
+    """Passing z without a learner fits the propensities with the tuned MLP."""
+    from catci.learners import mlp_learner
+
+    rng = np.random.default_rng(1)
+    n = 300
+    z = rng.normal(size=(n, 2))
+    x = rng.integers(1, 5, size=n)
+    y = rng.integers(1, 5, size=n)
+
+    default = catci_test(x, y, Ordinal(), Ordinal(), z=z, n_boot=30,
+                         rng=np.random.default_rng(3))
+    explicit = catci_test(x, y, Ordinal(), Ordinal(), z=z, learner=mlp_learner(),
+                          n_boot=30, rng=np.random.default_rng(3))
+    assert default.p_value == explicit.p_value
+    np.testing.assert_array_equal(default.statistics, explicit.statistics)
 
 
 def test_exact_statistic_option():

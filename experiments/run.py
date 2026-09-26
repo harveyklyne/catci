@@ -27,7 +27,7 @@ import pandas as pd
 
 import dgp
 import methods
-from config import Config, REPO_ROOT, power_config
+from config import Config, DEFAULT_LEARNER, LEARNERS, REPO_ROOT, power_config
 from catci.learners import fit_propensities, mlp_learner, oracle_learner, xgboost_learner
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
@@ -144,7 +144,7 @@ def _write_provenance(cfg, df, elapsed, workers, seed, out_parquet):
     (out_parquet.with_suffix(".provenance.json")).write_text(json.dumps(prov, indent=2))
 
 
-def _parse_config(name: str, reps=None, strengths=None, learner="xgb") -> Config:
+def _parse_config(name: str, reps=None, strengths=None, learner=DEFAULT_LEARNER) -> Config:
     parts = name.split("_")
     # intsetting may itself contain '_' (binary_tree)
     xsetting, ysetting, intsetting = parts[0], parts[1], "_".join(parts[2:])
@@ -164,11 +164,13 @@ def main():
     ap.add_argument("--strengths", type=str, default=None, help="comma-separated, e.g. 0.6,1.0,1.4")
     ap.add_argument("--workers", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--learner", choices=["xgb", "mlp", "oracle"], default="xgb")
+    ap.add_argument("--learner", nargs="+", choices=[*LEARNERS, "oracle"], default=list(LEARNERS),
+                    help="one run per learner, paired on the same data (default: mlp xgb)")
     args = ap.parse_args()
     strengths = [float(s) for s in args.strengths.split(",")] if args.strengths else None
-    cfg = _parse_config(args.config, reps=args.reps, strengths=strengths, learner=args.learner)
-    run(cfg, workers=args.workers, seed=args.seed)
+    for learner in args.learner:
+        cfg = _parse_config(args.config, reps=args.reps, strengths=strengths, learner=learner)
+        run(cfg, workers=args.workers, seed=args.seed)
 
 
 if __name__ == "__main__":

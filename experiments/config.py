@@ -9,9 +9,12 @@ with ``L = dx + dy - 3`` search levels several paths tie at the floor, so small
 ``n_boot`` costs power: at ``d = 8`` (``L = 13``) ``n_boot = 100`` recovers about
 half the power available at ``n_boot = 1000``, and 1000 is where the curve has
 flattened. It is also what the ``_bonf`` comparators need to be able to reject at
-all (floor ``L/(n_boot+1)``). XGBoost
-hyperparameters live beside this file in ``tuning/`` -- one JSON per marginal
-setting, carried over from the tuning runs so the package is self-contained.
+all (floor ``L/(n_boot+1)``).
+
+Every experiment runs both propensity learners, the MLP (the default, which the
+paper leads with) and XGBoost, on identical data. Their tuned hyperparameters
+live beside this file in ``tuning/`` -- one JSON per marginal setting holding
+both learners' winners, so the package is self-contained.
 """
 
 from __future__ import annotations
@@ -24,6 +27,11 @@ from typing import List
 # repo root: experiments/config.py -> parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TUNING_ROOT = Path(__file__).resolve().parent / "tuning"
+
+# The learners every experiment runs, default first. "oracle" (true propensities)
+# is also accepted wherever a learner is, as a control.
+LEARNERS = ("mlp", "xgb")
+DEFAULT_LEARNER = LEARNERS[0]
 
 
 @dataclass
@@ -40,13 +48,13 @@ class Config:
     normalise: bool = False
     adaptive: List[str] = field(default_factory=list)
     competitors: List[str] = field(default_factory=list)
-    learner: str = "xgb"  # "xgb" | "mlp" | "oracle"
+    learner: str = DEFAULT_LEARNER  # "mlp" | "xgb" | "oracle"
 
     def learner_params(self, setting: str) -> dict:
         """The tuned hyperparameters for ``self.learner`` under this marginal setting.
 
         Both learners' winners live in the same per-setting JSON, each tuned on
-        the same held-out-mlogloss protocol (see ``tune_mlp.py``), so switching
+        the same held-out-mlogloss protocol (see ``tune.py``), so switching
         ``learner`` compares two *tuned* models rather than tuned-vs-default.
         """
         if self.learner == "oracle":
@@ -54,7 +62,7 @@ class Config:
         path = TUNING_ROOT / f"n{self.n}_numclass{self.d}" / f"tune_{setting}_results.json"
         blob = json.loads(path.read_text())
         if self.learner not in blob:
-            raise KeyError(f"No {self.learner!r} params in {path}; run tune_mlp.py --write.")
+            raise KeyError(f"No {self.learner!r} params in {path}; run tune.py --learner {self.learner} --write.")
         return blob[self.learner]
 
     def xgb_params(self, setting: str) -> dict:
@@ -66,9 +74,12 @@ class Config:
 
 
 def _suffix_name(cfg: dict) -> dict:
-    """Tag a non-default learner into the name, so its parquet does not collide."""
-    if cfg.get("learner", "xgb") != "xgb":
-        cfg["name"] = f"{cfg['name']}__{cfg['learner']}"
+    """Tag the learner into the name, so each learner's parquet is its own file.
+
+    Every learner is tagged, the default included: an untagged name would change
+    meaning whenever the default did.
+    """
+    cfg["name"] = f"{cfg['name']}__{cfg.get('learner', DEFAULT_LEARNER)}"
     return cfg
 
 

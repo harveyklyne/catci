@@ -18,36 +18,42 @@ pip install -e ".[test,experiments]"
 pytest
 ```
 
-Extras: `test` (pytest, hypothesis), `learners` (xgboost, scikit-learn),
-`experiments` (learners + pandas, pyarrow).
+The core install includes scikit-learn, for the default MLP propensity learner.
+Extras: `test` (pytest, hypothesis), `learners` (xgboost, for the boosted
+alternative), `experiments` (xgboost + pandas, pyarrow).
 
 ## Usage
 
 ```python
 from catci import catci_test
 from catci.structure import Ordinal, Tree
-from catci.learners import xgboost_learner
 
 res = catci_test(
     x, y,                                  # 1-based integer label vectors
     x_structure=Tree.binary(dx),           # or Ordinal(), Saturated()
     y_structure=Tree.binary(dy),
     z=z,                                   # conditioning variables
-    learner=xgboost_learner({"eta": 0.01, "max.depth": 1, "gamma": 2, "nrounds": 163}),
     n_boot=1000,                           # see 'Calibration' below
 )
 res.p_value, res.statistics, res.partitions
 ```
 
-Or swap the propensity model without touching anything else:
+The propensities `P(X|Z)`, `P(Y|Z)` are fitted by a small neural network,
+`mlp_learner()`, at hyperparameters tuned for `n = 1000, d = 8`
+(`learners.DEFAULT_MLP_PARAMS`). Pass `learner=` to override them or to swap
+in gradient boosting, without touching anything else:
 
 ```python
-from catci.learners import mlp_learner
+from catci.learners import mlp_learner, xgboost_learner
 
-learner = mlp_learner({"hidden_layer_sizes": [8, 8], "alpha": 3.0})
+learner = mlp_learner({"hidden_layer_sizes": [32], "alpha": 10.0})
+learner = xgboost_learner({"eta": 0.01, "max.depth": 1, "gamma": 2, "nrounds": 163})
 ```
 
-Pass `f=`/`g=` instead of `learner=`/`z=` to supply propensities `P(X|Z)`,
+The two give the same size and power at `d = 8` (paired sweep, `report_learners.py`);
+the experiments run both.
+
+Pass `f=`/`g=` instead of `z=` to supply propensities `P(X|Z)`,
 `P(Y|Z)` directly — the oracle path, which separates "does the test calibrate"
 from "did the regression fit well".
 
@@ -62,17 +68,17 @@ src/catci/
   search.py      greedy_search: the adaptive label-merging path
   bootstrap.py   matrix_sqrt + N(0, Sigma) sampling
   calibrate.py   minP calibration of the search path + adaptive_pvalue
-  learners.py    Z -> P(label|Z) interface + oracle / xgboost / mlp learners
+  learners.py    Z -> P(label|Z) interface + mlp (default) / xgboost / oracle learners
   api.py         catci_test: the public entry point
 
 experiments/
   config.py      config-as-data: one resolved Config per figure
   dgp.py         data-generating processes, parametric in d
   methods.py     method registry: name -> p-value on a fitted dataset
-  run.py         power grids -> parquet + provenance sidecar
-  run_size.py    null-calibration (size) runs
-  tuning/        tuned hyperparameters, one JSON per marginal setting
-  tune_mlp.py    MLP tuner on the R protocol (held-out mlogloss)
+  run.py         power grids -> parquet + provenance sidecar, one per learner
+  run_size.py    null-calibration (size) runs, one per learner
+  tuning/        tuned hyperparameters (mlp + xgb), one JSON per marginal setting
+  tune.py        tuner for either learner on the R protocol (held-out mlogloss)
   bench_learners.py  propensity quality: E_f, the Assumption 1 remainder
   report_learners.py print the size/power/propensity comparison tables
   bench_sweep.sh     drive the whole learner comparison

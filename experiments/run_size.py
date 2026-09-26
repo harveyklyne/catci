@@ -13,7 +13,7 @@ import argparse
 
 import numpy as np
 
-from config import size_config
+from config import LEARNERS, size_config
 import run as runner
 
 ALPHA = 0.05
@@ -41,14 +41,16 @@ def main():
     ap.add_argument("--reps", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--learner", choices=["xgb", "mlp", "oracle"], default="xgb")
+    ap.add_argument("--learner", nargs="+", choices=[*LEARNERS, "oracle"], default=list(LEARNERS),
+                    help="one run per learner, paired on the same data (default: mlp xgb)")
     args = ap.parse_args()
 
     for s in args.settings:
         xs, ys = s.split("_")
-        cfg = size_config(xs, ys, reps=args.reps, learner=args.learner)
-        df = runner.run(cfg, workers=args.workers, seed=args.seed)
-        report(df, cfg)
+        for learner in args.learner:
+            cfg = size_config(xs, ys, reps=args.reps, learner=learner)
+            df = runner.run(cfg, workers=args.workers, seed=args.seed)
+            report(df, cfg)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ import numpy as np
 from .calibrate import adaptive_pvalue
 from .statistic import ApproxChi, ExactChi
 from .gcm import form_t_sigma
-from .learners import Learner, fit_propensities
+from .learners import Learner, fit_propensities, mlp_learner
 from .search import greedy_search
 from .structure import Structure
 
@@ -47,8 +47,10 @@ def catci_test(
 ) -> CatciResult:
     """Test conditional independence ``X _||_ Y | Z`` for categorical ``X, Y``.
 
-    Provide propensities directly (``f``, ``g`` -- the oracle path) or a
-    ``learner`` plus ``z`` to fit them on the full sample. Returns the p-value
+    Provide propensities directly (``f``, ``g`` -- the oracle path) or ``z`` to
+    fit them on the full sample with ``learner``, which defaults to
+    :func:`~catci.learners.mlp_learner` at its tuned defaults (pass
+    ``xgboost_learner(...)`` for the boosted alternative). Returns the p-value
     together with the observed statistic path and the partitions the search
     visited. ``n_jobs`` threads share the bootstrap searches (``-1`` = all cores).
 
@@ -66,8 +68,10 @@ def catci_test(
         rng = np.random.default_rng()
 
     if f is None or g is None:
-        if learner is None or z is None:
-            raise ValueError("Provide either (f, g) or (learner, z).")
+        if z is None:
+            raise ValueError("Provide either (f, g) or z (and optionally a learner).")
+        if learner is None:
+            learner = mlp_learner()
         f = fit_propensities(z, x, dx, learner)
         g = fit_propensities(z, y, dy, learner)
 

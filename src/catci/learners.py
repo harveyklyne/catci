@@ -11,8 +11,9 @@ machinery bought nothing and cost an nfolds-fold slowdown plus a fold-assignment
 RNG stream in every replicate.
 
 The **oracle** learner returns the true propensities and lets you separate "the
-test calibrates" from "the regression fit well";
-:func:`xgboost_learner` and :func:`mlp_learner` are the real ones used by the experiments.
+test calibrates" from "the regression fit well". The real learners are
+:func:`mlp_learner` -- the default, and the one the paper leads with -- and
+:func:`xgboost_learner`, the comparator. The experiments run both.
 """
 
 from __future__ import annotations
@@ -28,7 +29,17 @@ __all__ = [
     "xgboost_learner",
     "mlp_learner",
     "fit_propensities",
+    "DEFAULT_MLP_PARAMS",
 ]
+
+# The tuner's winner on all five marginal settings at n = 1000, d = 8 (held-out
+# mlogloss, see experiments/tune.py): a small net with heavy L2 shrinkage.
+DEFAULT_MLP_PARAMS = {
+    "hidden_layer_sizes": (8, 8),
+    "alpha": 3.0,
+    "activation": "tanh",
+    "max_iter": 400,
+}
 
 
 class Predict(Protocol):
@@ -99,16 +110,18 @@ def fit_propensities(
     return predict(z)
 
 
-def mlp_learner(params: dict) -> Learner:
+def mlp_learner(params: dict | None = None) -> Learner:
     """Multi-layer perceptron multinomial propensity learner (sklearn ``MLPClassifier``).
 
-    The alternative to :func:`xgboost_learner`. Boosted stumps approximate a
+    The default learner. Boosted stumps (:func:`xgboost_learner`) approximate a
     smooth propensity surface by a staircase; a net with a smooth activation
-    approximates it smoothly, which is the whole reason to try one here.
+    approximates it smoothly.
 
     ``params`` mirrors the tuning JSONs' ``mlp`` block: ``hidden_layer_sizes``
     (list or tuple), ``alpha`` (L2 penalty), ``learning_rate_init``,
-    ``max_iter``, ``activation``, ``random_state``. Z is standardised before the
+    ``max_iter``, ``activation``, ``random_state``. Keys left out fall back to
+    :data:`DEFAULT_MLP_PARAMS`, the tuned winner at ``n = 1000, d = 8``; retune
+    with ``experiments/tune.py`` for a very different ``n`` or ``d``. Z is standardised before the
     net sees it -- an unscaled input is the usual reason an MLP silently
     underfits, and the scaler is fitted on the training rows only.
 
@@ -119,14 +132,13 @@ def mlp_learner(params: dict) -> Learner:
     from sklearn.preprocessing import StandardScaler
     from threadpoolctl import threadpool_limits
 
-    p = dict(params)
-    hidden = p.pop("hidden_layer_sizes", (64, 64))
+    p = {**DEFAULT_MLP_PARAMS, **(params or {})}
     kwargs = dict(
-        hidden_layer_sizes=tuple(hidden),
-        activation=p.pop("activation", "tanh"),
-        alpha=p.pop("alpha", 1e-2),
+        hidden_layer_sizes=tuple(p.pop("hidden_layer_sizes")),
+        activation=p.pop("activation"),
+        alpha=p.pop("alpha"),
         learning_rate_init=p.pop("learning_rate_init", 1e-3),
-        max_iter=int(p.pop("max_iter", 500)),
+        max_iter=int(p.pop("max_iter")),
         random_state=int(p.pop("random_state", 0)),
         solver="adam",
     )

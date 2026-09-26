@@ -13,6 +13,11 @@ authors = [{ name = "Harvey Klyne" }]
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
+    # the default propensity learner (mlp_learner) is an sklearn MLPClassifier
+    "scikit-learn>=1.3",
+    # imported directly by mlp_learner to pin BLAS threads; ships with sklearn,
+    # but the import is ours so the dependency is declared rather than borrowed.
+    "threadpoolctl>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -20,12 +25,9 @@ test = [
     "pytest>=7.0",
     "hypothesis>=6.0",
 ]
+# the boosted alternative, xgboost_learner
 learners = [
-    "scikit-learn>=1.3",
     "xgboost>=2.0",
-    # imported directly by mlp_learner to pin BLAS threads; ships with sklearn,
-    # but the import is ours so the dependency is declared rather than borrowed.
-    "threadpoolctl>=3.0",
 ]
 experiments = [
     "scikit-learn>=1.3",
