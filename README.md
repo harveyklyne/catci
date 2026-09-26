@@ -30,7 +30,7 @@ from catci.learners import xgboost_learner
 
 res = catci_test(
     x, y,                                  # 1-based integer label vectors
-    x_structure=Tree.binary(dx),           # or Ordinal(), Saturated()
+    x_structure=Tree.binary(dx),           # or Ordinal(), Cyclic(), Saturated(), Tree.from_parents(...)
     y_structure=Tree.binary(dy),
     z=z,                                   # conditioning variables
     learner=xgboost_learner({"eta": 0.01, "max.depth": 1, "gamma": 2, "nrounds": 163}),
@@ -48,7 +48,7 @@ from "did the regression fit well".
 ```
 src/catci/
   gcm.py         form_t_sigma: (x, y, f, g) -> (T, Sigma)          [pure]
-  structure.py   Ordinal / Saturated / Tree: permitted_merges()
+  structure.py   Ordinal / Cyclic / Saturated / Tree: permitted_merges()
   merging.py     rank-one update formulae (24)-(27)                [pure]
   statistic.py   ApproxChi init/update/value + depth-0 comparators
   search.py      greedy_search: the adaptive label-merging path
