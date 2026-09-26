@@ -21,14 +21,24 @@ from catci.bootstrap import bootstrap_T
 from catci.calibrate import bonferroni_pvalue, double_bootstrap_pvalue
 from catci.statistic import ApproxChi, euclid, max_abs, mgcm
 from catci.gcm import form_t_sigma
-from catci.search import greedy_search
+from catci.search import beam_search, evaluate_path, greedy_search, random_merges
 from catci.structure import Ordinal, Saturated, Tree
 
 SEARCHES = ("tree", "ordinal", "greedy")
 # Each search also has a `<name>_bonf` variant: same statistic path, simple FWER
 # control instead of the minP calibration. Note its resolution floor is L/(n_boot+1),
 # so it cannot reject at alpha unless n_boot >= L/alpha (L = dx + dy - 3).
-ADAPTIVE = SEARCHES + tuple(f"{s}_bonf" for s in SEARCHES) + ("max", "euclid", "mGCM")
+#
+# TODO item 7 variants, same structures, same minP calibration:
+#   `<name>_random` -- one merge path drawn at random (ignoring the data), shared by
+#                      the observed and every bootstrap draw;
+#   `<name>_split`  -- greedy path chosen on a random half of the rows, then
+#                      evaluated and calibrated on the other half only;
+#   `greedy_beam<w>` -- beam search of width w over all pairs (w = 1 is `greedy`).
+# See SEARCH.md for the Gaussian-limit power study of all of these.
+ALTERNATIVES = tuple(f"{s}_{v}" for s in SEARCHES for v in ("random", "split")) + ("greedy_beam5",)
+ADAPTIVE = (SEARCHES + tuple(f"{s}_bonf" for s in SEARCHES) + ALTERNATIVES
+            + ("max", "euclid", "mGCM"))
 COMPETITORS = ("ankan", "chi_sq", "multinomial")
 
 
@@ -55,23 +65,70 @@ class Fitted:
 # --------------------------------------------------------------------------- #
 # Adaptive methods (shared bootstrap draws, matching R evaluate_sim)
 # --------------------------------------------------------------------------- #
-def _statistic_fn(name, dx, dy, statistic):
-    """A function (T_vector, Sigma) -> statistic (scalar for depth-0, vector for a search)."""
-    search_structs = {
+def _structures(name, dx, dy):
+    return {
         "tree": lambda: (Tree.binary(dx), Tree.binary(dy)),
         "ordinal": lambda: (Ordinal(), Ordinal()),
         "greedy": lambda: (Saturated(), Saturated()),
-    }
-    name = name.removesuffix("_bonf")  # the calibration differs, the statistic path does not
-    if name in search_structs:
-        xs, ys = search_structs[name]()
+    }[name]()
 
-        def fn(T_vec, Sigma):
-            return np.asarray(greedy_search(T_vec, Sigma, dx, dy, xs, ys, statistic).values)
+
+def _statistic_fn(name, dx, dy, statistic, rng):
+    """A function (T_vector, Sigma) -> statistic (scalar for depth-0, vector for a search)."""
+    name = name.removesuffix("_bonf")  # the calibration differs, the statistic path does not
+    base, _, variant = name.partition("_")
+    if base in SEARCHES:
+        xs, ys = _structures(base, dx, dy)
+        if variant == "random":
+            merges = random_merges(dx, dy, xs, ys, rng)  # drawn once: fixed across draws
+
+            def fn(T_vec, Sigma):
+                return np.asarray(evaluate_path(T_vec, Sigma, dx, dy, merges, statistic).values)
+
+        elif variant.startswith("beam"):
+            width = int(variant.removeprefix("beam"))
+
+            def fn(T_vec, Sigma):
+                return np.asarray(beam_search(T_vec, Sigma, dx, dy, xs, ys, width, statistic).values)
+
+        else:
+
+            def fn(T_vec, Sigma):
+                return np.asarray(greedy_search(T_vec, Sigma, dx, dy, xs, ys, statistic).values)
 
         return fn
     scalar = {"max": max_abs, "euclid": euclid, "mGCM": mgcm}[name]
     return lambda T_vec, Sigma: float(scalar(T_vec, Sigma))
+
+
+def split_pvalue(fitted: Fitted, name: str, n_boot: int, rng: np.random.Generator,
+                 normalise: bool = False) -> float:
+    """Sample-split search: choose the greedy path on half A, test it on half B only.
+
+    The propensities are the full-sample ones in ``fitted`` (no refitting per half),
+    so the halves are independent only up to that shared fit -- exact with oracle
+    propensities, asymptotically so otherwise.
+    """
+    base = name.removesuffix("_split")
+    xs, ys = _structures(base, fitted.dx, fitted.dy)
+    statistic = ApproxChi()
+    n = fitted.x.shape[0]
+    perm = rng.permutation(n)
+    A, B = perm[: n // 2], perm[n // 2:]
+
+    def half(rows):
+        return form_t_sigma(fitted.x[rows], fitted.y[rows], fitted.f[rows], fitted.g[rows],
+                            normalise=normalise)
+
+    ts_A, ts_B = half(A), half(B)
+    merges = greedy_search(ts_A.T_vector, ts_A.Sigma, fitted.dx, fitted.dy, xs, ys, statistic).merges
+
+    def fn(T_vec):
+        return np.asarray(evaluate_path(T_vec, ts_B.Sigma, fitted.dx, fitted.dy, merges, statistic).values)
+
+    boot_T = bootstrap_T(ts_B.Sigma, n_boot, rng)
+    statistics_boot = np.column_stack([fn(boot_T[:, b]) for b in range(n_boot)])
+    return double_bootstrap_pvalue(fn(ts_B.T_vector), statistics_boot, rng)
 
 
 def adaptive_pvalues(fitted: Fitted, method_names, n_boot: int, rng: np.random.Generator) -> dict:
@@ -82,7 +139,10 @@ def adaptive_pvalues(fitted: Fitted, method_names, n_boot: int, rng: np.random.G
 
     out = {}
     for name in method_names:
-        fn = _statistic_fn(name, fitted.dx, fitted.dy, statistic)
+        if name.endswith("_split"):  # its own half-sample (T, Sigma) and draws
+            out[name] = split_pvalue(fitted, name, n_boot, rng)
+            continue
+        fn = _statistic_fn(name, fitted.dx, fitted.dy, statistic, rng)
         calibrate = bonferroni_pvalue if name.endswith("_bonf") else double_bootstrap_pvalue
         statistics = np.atleast_1d(fn(fitted.T_vector, Sigma))
         statistics_boot = np.column_stack(

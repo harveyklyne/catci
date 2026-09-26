@@ -32,6 +32,8 @@ calibration exchangeable paths directly and asserts uniformity level by level.
 
 from __future__ import annotations
 
+from typing import Callable
+
 import numpy as np
 
 from .bootstrap import bootstrap_T
@@ -129,12 +131,18 @@ def adaptive_pvalue(
     n_boot: int = 100,
     statistic=None,
     rng: np.random.Generator | None = None,
+    search: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> float:
-    """Run the greedy search on the observed and bootstrap ``T`` and calibrate.
+    """Run the search on the observed and bootstrap ``T`` and calibrate.
 
     The bootstrap draws ``T ~ N(0, Sigma)`` share the observed ``Sigma``; each is
-    put through the same greedy search, and the observed statistic path is compared
+    put through the same search, and the observed statistic path is compared
     against the bootstrap paths by :func:`double_bootstrap_pvalue`.
+
+    ``search`` maps a ``T`` vector to its statistic path (``Sigma`` fixed); the
+    default is :func:`~catci.search.greedy_search` over the two structures. Any
+    alternative is valid provided it is the same map for every draw -- or, if
+    randomised, randomised independently of ``T`` (see :mod:`catci.search`).
     """
     if statistic is None:
         statistic = ApproxChi()
@@ -142,6 +150,8 @@ def adaptive_pvalue(
         rng = np.random.default_rng()
 
     def path(T_vec: np.ndarray) -> np.ndarray:
+        if search is not None:
+            return np.asarray(search(T_vec))
         return np.asarray(
             greedy_search(T_vec, Sigma, dx, dy, x_structure, y_structure, statistic).values
         )
