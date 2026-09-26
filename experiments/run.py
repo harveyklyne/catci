@@ -6,9 +6,12 @@ commit, package versions, seed and runtime -- so a figure is reproducible from
 files, not from an editing session.
 
 Usage:
-    python run.py <config-name> [--reps N] [--strengths a,b,c] [--workers W] [--seed S]
+    python run.py <config-name> [--n N] [--d D | --dx DX --dy DY] [--reps N]
+                  [--strengths a,b,c] [--methods m1,m2] [--n-boot B] [--workers W] [--seed S]
 
-<config-name> is "<x>_<y>_<int>", e.g. lin_lin_binary_tree.
+<config-name> is "<x>_<y>_<int>", e.g. lin_lin_binary_tree. ``--n/--d/--dx/--dy``
+move it along the size axes (default ``n = 1000, d = 8``); ``--methods`` replaces
+the method list (adaptive and competitor names may be mixed).
 """
 
 from __future__ import annotations
@@ -38,21 +41,21 @@ def _one_replicate(cfg: Config, strength: float, rep: int, seed_seq) -> list[dic
     rng = np.random.default_rng(seed_seq)
 
     data = dgp.simulate_data(
-        cfg.n, cfg.d, cfg.d, cfg.xsetting, cfg.ysetting,
+        cfg.n, cfg.dx, cfg.dy, cfg.xsetting, cfg.ysetting,
         strength=strength, intsetting=cfg.intsetting, permute=False, rng=rng,
     )
 
     # fit f (X|Z) and g (Y|Z) on the full sample with the per-setting tuned learners
-    f = fit_propensities(data["z"], data["x"], cfg.d, xgboost_learner(cfg.xgb_params(cfg.xsetting)))
-    g = fit_propensities(data["z"], data["y"], cfg.d, xgboost_learner(cfg.xgb_params(cfg.ysetting)))
+    f = fit_propensities(data["z"], data["x"], cfg.dx, xgboost_learner(cfg.xgb_params(cfg.xsetting, cfg.dx)))
+    g = fit_propensities(data["z"], data["y"], cfg.dy, xgboost_learner(cfg.xgb_params(cfg.ysetting, cfg.dy)))
 
-    fitted = methods.Fitted.build(data["x"], data["y"], data["z"], f, g, cfg.d, cfg.d, cfg.normalise)
+    fitted = methods.Fitted.build(data["x"], data["y"], data["z"], f, g, cfg.dx, cfg.dy, cfg.normalise)
 
     pvals = {}
     pvals.update(methods.adaptive_pvalues(fitted, cfg.adaptive, cfg.n_boot, rng))
     pvals.update(methods.competitor_pvalues(fitted, cfg.competitors, rng))
 
-    base = dict(name=cfg.name, n=cfg.n, d=cfg.d, xsetting=cfg.xsetting,
+    base = dict(name=cfg.name, n=cfg.n, dx=cfg.dx, dy=cfg.dy, xsetting=cfg.xsetting,
                 ysetting=cfg.ysetting, intsetting=cfg.intsetting, strength=strength, rep=rep)
     return [dict(base, method=m, p_value=p) for m, p in pvals.items()]
 
@@ -67,6 +70,8 @@ def _task(args):
 
 def run(cfg: Config, workers: int = 5, seed: int = 0) -> pd.DataFrame:
     RESULTS_DIR.mkdir(exist_ok=True)
+    for setting, d in ((cfg.xsetting, cfg.dx), (cfg.ysetting, cfg.dy)):
+        cfg.xgb_params(setting, d)  # fail now, not once per replicate, if a tuning is missing
     tasks = []
     ss = np.random.SeedSequence(seed)
     # one independent child seed per (strength, rep), spawned deterministically
@@ -125,29 +130,51 @@ def _write_provenance(cfg, df, elapsed, workers, seed, out_parquet):
     (out_parquet.with_suffix(".provenance.json")).write_text(json.dumps(prov, indent=2))
 
 
-def _parse_config(name: str, reps=None, strengths=None) -> Config:
+def _parse_config(name: str, reps=None, strengths=None, methods_=None, n_boot=None, **dims) -> Config:
     parts = name.split("_")
     # intsetting may itself contain '_' (binary_tree)
     xsetting, ysetting, intsetting = parts[0], parts[1], "_".join(parts[2:])
-    cfg = power_config(xsetting, ysetting, intsetting)
+    cfg = power_config(xsetting, ysetting, intsetting, **{k: v for k, v in dims.items() if v is not None})
     over = {}
     if reps is not None:
         over["reps"] = reps
     if strengths is not None:
         over["strengths"] = strengths
+    if n_boot is not None:
+        over["n_boot"] = n_boot
+    if methods_ is not None:
+        unknown = set(methods_) - set(methods.ADAPTIVE) - set(methods.COMPETITORS)
+        if unknown:
+            raise ValueError(f"Unknown methods: {sorted(unknown)}")
+        over["adaptive"] = [m for m in methods_ if m in methods.ADAPTIVE]
+        over["competitors"] = [m for m in methods_ if m in methods.COMPETITORS]
     return replace(cfg, **over) if over else cfg
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("config")
+    ap.add_argument("--n", type=int, default=None)
+    ap.add_argument("--d", type=int, default=None, help="sets dx = dy = d")
+    ap.add_argument("--dx", type=int, default=None)
+    ap.add_argument("--dy", type=int, default=None)
+    ap.add_argument("--methods", type=str, default=None, help="comma-separated; replaces the default list")
+    ap.add_argument("--n-boot", type=int, default=None)
+    ap.add_argument("--tag", type=str, default=None,
+                    help="appended to the results name, so a partial run cannot overwrite a full one")
     ap.add_argument("--reps", type=int, default=None)
     ap.add_argument("--strengths", type=str, default=None, help="comma-separated, e.g. 0.6,1.0,1.4")
     ap.add_argument("--workers", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
     strengths = [float(s) for s in args.strengths.split(",")] if args.strengths else None
-    cfg = _parse_config(args.config, reps=args.reps, strengths=strengths)
+    cfg = _parse_config(
+        args.config, reps=args.reps, strengths=strengths, n_boot=args.n_boot,
+        methods_=args.methods.split(",") if args.methods else None,
+        n=args.n, d=args.d, dx=args.dx, dy=args.dy,
+    )
+    if args.tag:
+        cfg = replace(cfg, name=f"{cfg.name}_{args.tag}")
     run(cfg, workers=args.workers, seed=args.seed)
 
 

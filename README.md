@@ -55,6 +55,7 @@ src/catci/
   bootstrap.py   matrix_sqrt + N(0, Sigma) sampling
   calibrate.py   minP calibration of the search path + adaptive_pvalue
   learners.py    Z -> P(label|Z) interface + oracle / xgboost learners
+  tuning.py      K-fold CV tuner for the xgboost learner (sims and real data)
   api.py         catci_test: the public entry point
 
 experiments/
@@ -63,7 +64,10 @@ experiments/
   methods.py     method registry: name -> p-value on a fitted dataset
   run.py         power grids -> parquet + provenance sidecar
   run_size.py    null-calibration (size) runs
-  tuning/        frozen XGBoost hyperparameters, one JSON per marginal setting
+  run_d_axis.py  power/size as dx grows with n, dy fixed (one run.py block per dx)
+  tune.py        tune the learner for a simulated (n, num_class, setting)
+  tune_check.py  score tunings by KL to the true propensities
+  tuning/        XGBoost hyperparameters, one JSON per (n, num_class, setting)
 
 tests/
   fixtures/      the frozen R oracle (see fixtures/README.md)
