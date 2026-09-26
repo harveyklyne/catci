@@ -80,10 +80,10 @@ def _assert_arcs_in_cyclic_order(partition, d):
 
 
 def test_cyclic_pairs():
-    assert Cyclic().permitted_merges(_initial_partition(4)) == [(1, 2), (2, 3), (3, 4), (1, 4)]
+    assert Cyclic().permitted_merges(_initial_partition(4)) == [(1, 2), (1, 4), (2, 3), (3, 4)]
     assert Cyclic().permitted_merges(_initial_partition(2)) == []
     # after the wrap merge, the arc {4, 1} sits at position 1, adjacent to both 2 and 3
-    assert Cyclic().permitted_merges([[1, 4], [2], [3]]) == [(1, 2), (2, 3), (1, 3)]
+    assert Cyclic().permitted_merges([[1, 4], [2], [3]]) == [(1, 2), (1, 3), (2, 3)]
 
 
 @settings(max_examples=300, deadline=None)
@@ -95,7 +95,7 @@ def test_cyclic_groups_stay_arcs(d, choices):
         if n > 2:
             adjacent = [(i, j) for i in range(1, n) for j in range(i + 1, n + 1)
                         if _is_arc(partition[i - 1] + partition[j - 1], d)]
-            assert sorted(Cyclic().permitted_merges(partition)) == adjacent
+            assert Cyclic().permitted_merges(partition) == adjacent  # lexicographic
 
 
 @settings(max_examples=100, deadline=None)

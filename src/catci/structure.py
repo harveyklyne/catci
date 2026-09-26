@@ -23,6 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Hashable, List, Mapping, Optional, Sequence, Tuple
 
+import numpy as np
+
 __all__ = [
     "Structure",
     "Ordinal",
@@ -43,6 +45,49 @@ class Structure:
     def permitted_merges(self, partition: Partition) -> List[Pair]:  # pragma: no cover
         raise NotImplementedError
 
+    def permitted_mask(self, sizes: np.ndarray, gid: np.ndarray) -> np.ndarray:
+        """:meth:`permitted_merges` for a batch of partitions, as a boolean mask.
+
+        The vectorised search (:mod:`catci.search`) stores a partition of ``d``
+        labels by *slot*: a group lives at the slot of its smallest label.
+
+        Parameters
+        ----------
+        sizes : ``(B, d)`` int, size of the group at each slot (0 = no group there).
+        gid : ``(B, d)`` int, ``gid[b, l]`` = slot of the group holding label ``l + 1``.
+
+        Returns
+        -------
+        ``(B, d, d)`` bool, ``True`` at ``[b, s, t]`` (``s < t``) when merging the
+        groups at slots ``s`` and ``t`` is permitted. Slot order is partition-position
+        order, so a row-major scan of the mask visits candidates in the order
+        ``permitted_merges`` lists them whenever that order is lexicographic -- true
+        of every structure in this module.
+
+        This default rebuilds each partition and calls :meth:`permitted_merges`
+        (memoised on the partition); subclasses override it with array code.
+        """
+        B, d = sizes.shape
+        mask = np.zeros((B, d, d), dtype=bool)
+        cache = self.__dict__.setdefault("_mask_cache", {})
+        if len(cache) > 100_000:  # bound the memo; it only saves recomputation
+            cache.clear()
+        for b in range(B):
+            key = gid[b].tobytes()
+            if key not in cache:
+                slots = np.flatnonzero(sizes[b])
+                partition = [list(np.flatnonzero(gid[b] == s) + 1) for s in slots]
+                pairs = self.permitted_merges(partition)
+                cache[key] = (slots[[i - 1 for i, _ in pairs]], slots[[j - 1 for _, j in pairs]])
+            s, t = cache[key]
+            mask[b, s, t] = True
+        return mask
+
+
+def _guard(sizes: np.ndarray) -> np.ndarray:
+    """``(B, 1, 1)`` mask of partitions with more than two groups (the ``d > 2`` guard)."""
+    return (np.count_nonzero(sizes, axis=1) > 2)[:, None, None]
+
 
 class Ordinal(Structure):
     """Adjacent merges only: (1,2), (2,3), ..., (d-1, d)."""
@@ -53,6 +98,12 @@ class Ordinal(Structure):
             return []
         return [(i, i + 1) for i in range(1, d)]
 
+    def permitted_mask(self, sizes: np.ndarray, gid: np.ndarray) -> np.ndarray:
+        active = sizes > 0
+        pos = np.cumsum(active, axis=1)
+        nxt = pos[:, None, :] == pos[:, :, None] + 1
+        return nxt & active[:, :, None] & active[:, None, :] & _guard(sizes)
+
 
 class Cyclic(Structure):
     """Adjacent merges on a cycle: the ordinal pairs plus the wrap pair (1, d).
@@ -61,13 +112,23 @@ class Cyclic(Structure):
     cycle, in cyclic order by position: a merge lands at the lower position, so an
     arc through the wrap point sits at position 1 and ``(1, d)`` still joins the
     two groups either side of it. Pinned by ``test_cyclic_groups_stay_arcs``.
+    Pairs are listed lexicographically, so ``(1, d)`` comes second, matching the
+    row-major scan of :meth:`permitted_mask` (and hence its tie-breaking).
     """
 
     def permitted_merges(self, partition: Partition) -> List[Pair]:
         d = len(partition)
         if d <= 2:
             return []
-        return [(i, i + 1) for i in range(1, d)] + [(1, d)]
+        return [(1, 2), (1, d)] + [(i, i + 1) for i in range(2, d)]
+
+    def permitted_mask(self, sizes: np.ndarray, gid: np.ndarray) -> np.ndarray:
+        mask = Ordinal().permitted_mask(sizes, gid)
+        active = sizes > 0
+        first = np.argmax(active, axis=1)
+        last = active.shape[1] - 1 - np.argmax(active[:, ::-1], axis=1)
+        mask[np.arange(len(sizes)), first, last] = True
+        return mask & _guard(sizes)
 
 
 class Saturated(Structure):
@@ -78,6 +139,12 @@ class Saturated(Structure):
         if d <= 2:
             return []
         return [(i, j) for i in range(1, d) for j in range(i + 1, d + 1)]
+
+    def permitted_mask(self, sizes: np.ndarray, gid: np.ndarray) -> np.ndarray:
+        active = sizes > 0
+        d = sizes.shape[1]
+        upper = np.triu(np.ones((d, d), dtype=bool), k=1)
+        return upper & active[:, :, None] & active[:, None, :] & _guard(sizes)
 
 
 # --------------------------------------------------------------------------- #
@@ -148,6 +215,7 @@ class Tree(Structure):
     def __init__(self, tree: TreeNode):
         _check_tree(tree)
         self.tree = tree
+        self._sibling_table = _binary_sibling_table(tree)
         self._parent = {}  # node root -> parent node
         self._nodes = []   # every internal node, pre-order
         stack = [tree]
@@ -246,3 +314,36 @@ class Tree(Structure):
             (i, j) for block in by_context.values()
             for a, i in enumerate(block) for j in block[a + 1:]
         )
+
+    def permitted_mask(self, sizes: np.ndarray, gid: np.ndarray) -> np.ndarray:
+        if self._sibling_table is None:  # n-ary tree: groups need not be nodes
+            return super().permitted_mask(sizes, gid)
+        s1, n1, s2, n2 = self._sibling_table
+        B, d = sizes.shape
+        # In a binary tree every group is a node, and a node is fixed by (min label,
+        # size): the two children of an internal node are both whole groups exactly
+        # when the slots of their min labels hold groups of their sizes.
+        ok = (sizes[:, s1] == n1) & (sizes[:, s2] == n2)
+        b, k = np.nonzero(ok)
+        mask = np.zeros((B, d, d), dtype=bool)
+        mask[b, s1[k], s2[k]] = True
+        return mask & _guard(sizes)
+
+
+def _binary_sibling_table(tree: TreeNode):
+    """``(s1, n1, s2, n2)`` per internal node: 0-based min label and size of each child.
+
+    ``None`` unless every internal node has exactly two children.
+    """
+    rows = []
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        if not node.children:
+            continue
+        if len(node.children) != 2:
+            return None
+        c1, c2 = sorted(node.children, key=lambda c: min(c.root))
+        rows.append((min(c1.root) - 1, len(c1.root), min(c2.root) - 1, len(c2.root)))
+        stack.extend(node.children)
+    return tuple(np.array(col, dtype=np.int64) for col in zip(*rows)) if rows else None
