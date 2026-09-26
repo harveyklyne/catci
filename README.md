@@ -238,9 +238,12 @@ the same structure the test exploits, and it is item 2's problem. Until then,
 large-`d` simulation runs use `learner="oracle"`, which isolates the test from
 the regression.
 
-**Cost.** One replicate is dominated by the search, run `n_boot + 1` times. At
-`dy = 4` one ordinal search takes ~0.1 s (`dx = 16`), ~0.5 s (32), ~1.3 s
-(64) and ~16 s (256). The `Saturated` search is ~20x that. The dense `Sigma`
+**Cost.** One replicate is dominated by the search over all `n_boot + 1`
+paths. With the vectorised search, a whole replicate's ordinal paths at
+`dy = 4, n_boot = 200` take ~1.4 s (`dx = 32`), ~6 s (64), ~32 s (128) and
+~4.5 min (256), which is roughly cubic in `dx` (measured under heavy machine
+load). Before vectorisation `dx = 64` was ~4.5 min and `dx = 256` ~4.5 h.
+The dense `Sigma`
 is `(dx*dy)^2`, so symmetric `d` in the hundreds is out of reach whatever the
 speed. The applications are asymmetric (`dx` in the hundreds, `dy` a handful),
 which is why `dx` and `dy` are separate config axes.
@@ -261,10 +264,9 @@ paths. See `tests/fixtures/README.md` for the JSON conventions.
 - **Results are stale.** Every figure in `experiments/results-r-legacy/` came
   from R with cross-fitting. Nothing in the paper yet comes from this code; the
   grid needs re-running with `experiments/run.py`.
-- **`d` beyond ~64 is compute-bound.** `dx`/`dy` are config axes and
-  `run_d_axis.py` runs the grid, but the search costs ~16 s per draw at
-  `dx = 256, dy = 4` (TODO item 8). The search-free comparators run at any
-  `dx`.
+- **`dx` in the hundreds is feasible but not cheap.** At `dx = 256, dy = 4`
+  a replicate costs ~4.5 min at `n_boot = 200` and ~5x that at 1000, so a full
+  `d` grid needs a cluster or reduced reps at the top end.
 - **No learner for large `d`.** See "Tuning, and what breaks as `d` grows":
   at `n ~ 2000, d >= 64` both xgboost and multinomial logistic regression are
   worse than uniform.
