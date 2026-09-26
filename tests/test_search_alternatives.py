@@ -72,6 +72,18 @@ def test_beam_paths_match_single_draw_beam(name):
         np.testing.assert_allclose(batch[:, b], single.values, rtol=1e-12, atol=1e-14)
 
 
+def test_beam_paths_chunked_and_threaded():
+    # Many chunks (tiny budget) and threads must not change any path.
+    rng = np.random.default_rng(9)
+    dx, dy = 6, 5
+    Sigma = _random_sigma(rng, dx * dy)
+    T = np.linalg.cholesky(Sigma) @ rng.standard_normal((dx * dy, 23))
+    ref = beam_search_paths(T, Sigma, dx, dy, Saturated(), Saturated(), width=3)
+    got = beam_search_paths(T, Sigma, dx, dy, Saturated(), Saturated(), width=3,
+                            chunk_bytes=1, n_jobs=3)
+    np.testing.assert_array_equal(got, ref)
+
+
 @pytest.mark.parametrize("name", ["ordinal", "greedy", "tree"])
 def test_evaluate_path_replays_greedy(oracle, shared_TS, name):
     T, Sigma = shared_TS
