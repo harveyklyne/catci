@@ -87,6 +87,12 @@ def _copy_partition(partition: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
+def _check_labels(x_structure: Structure, y_structure: Structure, dx: int, dy: int) -> None:
+    # A tree over more labels than are coded would strand the search short of 2x2.
+    x_structure.check_labels(dx)
+    y_structure.check_labels(dy)
+
+
 def greedy_search(
     T_vector: np.ndarray,
     Sigma: np.ndarray,
@@ -97,6 +103,7 @@ def greedy_search(
     statistic=None,
 ) -> SearchResult:
     """Run the greedy merge search; see module docstring."""
+    _check_labels(x_structure, y_structure, dx, dy)
     if statistic is not None and not isinstance(statistic, ApproxChi):
         return _greedy_search_loop(T_vector, Sigma, dx, dy, x_structure, y_structure, statistic)
 
@@ -149,6 +156,7 @@ def greedy_search_paths(
     p, B = T.shape
     if p != dx * dy:
         raise ValueError("T must have dx*dy rows.")
+    _check_labels(x_structure, y_structure, dx, dy)
     shared = _Shared(Sigma, dx, dy)
     if n_jobs == -1:
         n_jobs = os.cpu_count() or 1
@@ -905,6 +913,7 @@ def _greedy_search_loop(
     statistic=None,
 ) -> SearchResult:
     """The original per-candidate loop: one ``statistic.update`` per permitted merge."""
+    _check_labels(x_structure, y_structure, dx, dy)
     if statistic is None:
         statistic = ApproxChi()
 

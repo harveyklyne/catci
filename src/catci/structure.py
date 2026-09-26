@@ -21,7 +21,7 @@ once the partition has ``<= 2`` groups (the ``(d > 2)`` guard, by construction).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import Hashable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -29,6 +29,7 @@ __all__ = [
     "Structure",
     "Ordinal",
     "Saturated",
+    "Cyclic",
     "Tree",
     "TreeNode",
     "make_binary_tree",
@@ -43,6 +44,9 @@ class Structure:
 
     def permitted_merges(self, partition: Partition) -> List[Pair]:  # pragma: no cover
         raise NotImplementedError
+
+    def check_labels(self, d: int) -> None:
+        """Raise if this structure cannot describe a variable with ``d`` labels."""
 
     def permitted_mask(self, sizes: np.ndarray, gid: np.ndarray) -> np.ndarray:
         """:meth:`permitted_merges` for a batch of partitions, as a boolean mask.
@@ -104,6 +108,32 @@ class Ordinal(Structure):
         return nxt & active[:, :, None] & active[:, None, :] & _guard(sizes)
 
 
+class Cyclic(Structure):
+    """Adjacent merges on a cycle: the ordinal pairs plus the wrap pair (1, d).
+
+    For temporal categoricals (day-of-week, month, hour). Groups stay arcs of the
+    cycle, in cyclic order by position: a merge lands at the lower position, so an
+    arc through the wrap point sits at position 1 and ``(1, d)`` still joins the
+    two groups either side of it. Pinned by ``test_cyclic_groups_stay_arcs``.
+    Pairs are listed lexicographically, so ``(1, d)`` comes second, matching the
+    row-major scan of :meth:`permitted_mask` (and hence its tie-breaking).
+    """
+
+    def permitted_merges(self, partition: Partition) -> List[Pair]:
+        d = len(partition)
+        if d <= 2:
+            return []
+        return [(1, 2), (1, d)] + [(i, i + 1) for i in range(2, d)]
+
+    def permitted_mask(self, sizes: np.ndarray, gid: np.ndarray) -> np.ndarray:
+        mask = Ordinal().permitted_mask(sizes, gid)
+        active = sizes > 0
+        first = np.argmax(active, axis=1)
+        last = active.shape[1] - 1 - np.argmax(active[:, ::-1], axis=1)
+        mask[np.arange(len(sizes)), first, last] = True
+        return mask & _guard(sizes)
+
+
 class Saturated(Structure):
     """All pairs (the 'greedy' search in the R package)."""
 
@@ -157,51 +187,158 @@ def make_binary_tree(d: int) -> TreeNode:
     return level[0]
 
 
-def _get_siblings(node_labels: Sequence[int], tree: TreeNode) -> List[TreeNode]:
-    """Nodes that are siblings of the subtree whose leaf-set is ``node_labels``."""
-    node = set(node_labels)
-    siblings: List[TreeNode] = []
-    if len(set(tree.root) - node) == 0:  # node covers the whole (sub)tree root
-        return siblings
-    for child in tree.children:
-        croot = set(child.root)
-        if node <= croot and len(croot - node) > 0:  # descend into the strictly-larger child
-            return _get_siblings(node_labels, child)
-        if croot & node:
-            if not croot <= node:
-                raise ValueError("Only part of vertex in node.")
-        else:
-            siblings.append(child)
-    return siblings
+def _check_tree(node: TreeNode) -> None:
+    """Children must partition their parent's root; no unary nodes."""
+    if not node.children:
+        if len(node.root) != 1:
+            raise ValueError(f"Leaf {node.root} must hold exactly one label.")
+        return
+    if len(node.children) < 2:
+        raise ValueError(f"Node {node.root} has a single child; collapse it.")
+    labels = [lab for c in node.children for lab in c.root]
+    if len(labels) != len(set(labels)) or tuple(sorted(labels)) != node.root:
+        raise ValueError(f"Children of {node.root} do not partition it.")
+    for c in node.children:
+        _check_tree(c)
 
 
 class Tree(Structure):
-    """Sibling merges only, per a fixed binary tree over the original labels."""
+    """Merges within one node of a fixed tree over the original labels.
+
+    The tree may have any arity. Every group in a partition reachable by the
+    search is either a whole node, or a union of two or more (but not all)
+    children of one node. Call that node the group's *context*: the parent of the
+    node the group equals, or else the node whose children it unions. Two groups
+    may merge iff they share a context. For a binary tree this is exactly
+    "merge siblings" (a union of both children is the node itself). For an n-ary
+    node it lets a partially merged block of children keep absorbing the rest --
+    matching only whole sibling nodes would strand ``{a, b}`` next to ``c``.
+    """
 
     def __init__(self, tree: TreeNode):
+        _check_tree(tree)
+        self.d = len(tree.root)
+        if tree.root != tuple(range(1, self.d + 1)):
+            raise ValueError(f"Tree leaves must be the labels 1..{self.d}.")
         self.tree = tree
         self._sibling_table = _binary_sibling_table(tree)
+        self._parent = {}  # node root -> parent node
+        self._nodes = []   # every internal node, pre-order
+        stack = [tree]
+        while stack:
+            node = stack.pop()
+            if node.children:
+                self._nodes.append(node)
+            for c in node.children:
+                self._parent[c.root] = node
+                stack.append(c)
+        self._contexts = {}  # group -> context; groups recur across bootstrap draws
+        self._lca_table = None  # built on first n-ary permitted_mask call
+
+    def check_labels(self, d: int) -> None:
+        if d != self.d:
+            raise ValueError(
+                f"Tree has {self.d} labels but the variable has {d}. Every tree leaf "
+                "must be a label that is coded in the data (dx = x.max()); build the "
+                "tree from the observed levels only.")
 
     @classmethod
     def binary(cls, d: int) -> "Tree":
         return cls(make_binary_tree(d))
 
+    @classmethod
+    def from_parents(
+        cls,
+        parents: Mapping[Hashable, Optional[Hashable]],
+        levels: Sequence[Hashable],
+    ) -> "Tree":
+        """Build a tree from a taxonomy given as a code -> parent-code mapping.
+
+        ``levels[k]`` is the category encoded as label ``k + 1``: each must be a
+        key of ``parents``, and none may be an ancestor of another. Codes that are
+        not keys, or map to ``None`` or NaN (a pandas missing value), are roots;
+        several roots are joined under one synthetic root. Only the ancestors of
+        ``levels`` are visited, so a taxonomy can be passed whole even when only
+        some of its leaves occur in the data; single-child chains are collapsed.
+        Pass only the levels that occur: the search needs every label in
+        ``1..len(levels)`` to be coded (see :meth:`check_labels`). Because
+        internal and leaf codes share one namespace, taxonomies whose levels
+        reuse codes (e.g. numeric CCS and chapter ids) should key on
+        ``(level, code)``.
+        """
+        levels = list(levels)
+        if not levels:
+            raise ValueError("levels must be non-empty.")
+        if any(_is_root(lev) for lev in levels):
+            raise ValueError("levels may not be None or NaN.")
+        if len(set(levels)) != len(levels):
+            raise ValueError("levels must be distinct.")
+        missing = [lev for lev in levels if lev not in parents]
+        if missing:
+            raise ValueError(f"levels with no entry in parents: {missing[:10]}")
+
+        children: dict = {None: []}
+        walked = set()  # codes already attached to their parent (each has one parent)
+        for code in levels:  # walk each level up to its root
+            seen = {code}
+            node = code
+            while node not in walked:
+                walked.add(node)
+                parent = parents.get(node)
+                if _is_root(parent):
+                    children[None].append(node)
+                    break
+                if parent in seen:
+                    raise ValueError(f"Cycle in parents through {parent!r}.")
+                seen.add(parent)
+                children.setdefault(parent, []).append(node)
+                node = parent
+        label = {lev: k + 1 for k, lev in enumerate(levels)}
+        clash = [lev for lev in levels if lev in children]
+        if clash:
+            raise ValueError(f"levels that are ancestors of other levels: {clash[:10]}")
+
+        def build(code) -> TreeNode:
+            if code in label:
+                return _make_leaf(label[code])
+            kids = [build(c) for c in children[code]]
+            return kids[0] if len(kids) == 1 else _make_parent(kids)
+
+        return cls(build(None))
+
+    def _context(self, group: Sequence[int]) -> TreeNode:
+        g = tuple(sorted(group))
+        if g in self._parent:
+            return self._parent[g]
+        if g in self._contexts:
+            return self._contexts[g]
+        members = set(g)
+        for node in self._nodes:
+            if members <= set(node.root) and all(
+                set(c.root) <= members or not (set(c.root) & members) for c in node.children
+            ):
+                if len(self._contexts) > 100_000:  # bound the memo; it only saves work
+                    self._contexts.clear()
+                self._contexts[g] = node
+                return node
+        raise ValueError(
+            f"Group {[int(x) for x in group]} is not a union of children of any tree node.")
+
     def permitted_merges(self, partition: Partition) -> List[Pair]:
         d = len(partition)
         if d <= 2:
             return []
-        pairs: List[Pair] = []
-        for i in range(1, d):  # 1-based position of the first group
-            siblings = _get_siblings(partition[i - 1], self.tree)
-            sib_sets = [set(s.root) for s in siblings]
-            for j in range(i + 1, d + 1):
-                if any(set(partition[j - 1]) == s for s in sib_sets):
-                    pairs.append((i, j))
-        return pairs
+        by_context: dict = {}  # bucket positions by context: O(d + pairs), not O(d^2)
+        for pos, group in enumerate(partition, start=1):
+            by_context.setdefault(id(self._context(group)), []).append(pos)
+        return sorted(
+            (i, j) for block in by_context.values()
+            for a, i in enumerate(block) for j in block[a + 1:]
+        )
 
     def permitted_mask(self, sizes: np.ndarray, gid: np.ndarray) -> np.ndarray:
         if self._sibling_table is None:  # n-ary tree: groups need not be nodes
-            return super().permitted_mask(sizes, gid)
+            return self._context_mask(sizes, gid)
         s1, n1, s2, n2 = self._sibling_table
         B, d = sizes.shape
         # In a binary tree every group is a node, and a node is fixed by (min label,
@@ -212,6 +349,62 @@ class Tree(Structure):
         mask = np.zeros((B, d, d), dtype=bool)
         mask[b, s1[k], s2[k]] = True
         return mask & _guard(sizes)
+
+    def _context_mask(self, sizes: np.ndarray, gid: np.ndarray) -> np.ndarray:
+        """The context rule as array code, for any arity.
+
+        A group's lowest enclosing node is the LCA of its leaves of smallest and
+        largest DFS rank. If the group *is* that node (same size) its context is
+        the node's parent; otherwise it is a union of that node's children and the
+        node is its context. Two slots may merge iff their contexts coincide.
+        """
+        if self._lca_table is None:
+            self._lca_table = _lca_table(self.tree)
+        rank, by_rank, lca, node_size, node_parent = self._lca_table
+        B, d = sizes.shape
+        rows = np.broadcast_to(np.arange(B)[:, None], (B, d))
+        lo = np.full((B, d), d - 1, dtype=np.int64)
+        hi = np.zeros((B, d), dtype=np.int64)
+        np.minimum.at(lo, (rows, gid), rank)
+        np.maximum.at(hi, (rows, gid), rank)
+        node = lca[by_rank[lo], by_rank[hi]]
+        ctx = np.where(node_size[node] == sizes, node_parent[node], node)
+        active = sizes > 0
+        upper = np.triu(np.ones((d, d), dtype=bool), k=1)
+        same = ctx[:, :, None] == ctx[:, None, :]
+        return same & upper & active[:, :, None] & active[:, None, :] & _guard(sizes)
+
+
+def _is_root(parent) -> bool:
+    """``None`` or NaN (``NaN != NaN``) marks a missing parent."""
+    return parent is None or (isinstance(parent, float) and parent != parent)
+
+
+def _lca_table(tree: TreeNode):
+    """Lookup tables for :meth:`Tree._context_mask`, over 0-based labels.
+
+    ``rank[l]`` is leaf ``l``'s DFS rank and ``by_rank`` its inverse; ``lca[a, b]``
+    is the index of the lowest node holding leaves ``a`` and ``b``; ``node_size`` and
+    ``node_parent`` are per node index (the root's parent is ``-1``).
+    """
+    d = len(tree.root)
+    lca = np.zeros((d, d), dtype=np.int64)
+    sizes, parents, order = [], [], []
+    stack = [(tree, -1)]
+    while stack:  # pre-order, children in order: descendants overwrite ancestors
+        node, parent = stack.pop()
+        k = len(sizes)
+        sizes.append(len(node.root))
+        parents.append(parent)
+        idx = np.asarray(node.root) - 1
+        lca[np.ix_(idx, idx)] = k
+        if not node.children:
+            order.append(node.root[0] - 1)
+        stack.extend((c, k) for c in reversed(node.children))
+    by_rank = np.asarray(order, dtype=np.int64)
+    rank = np.empty(d, dtype=np.int64)
+    rank[by_rank] = np.arange(d)
+    return rank, by_rank, lca, np.asarray(sizes), np.asarray(parents)
 
 
 def _binary_sibling_table(tree: TreeNode):
