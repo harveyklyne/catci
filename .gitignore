@@ -19,3 +19,6 @@ experiments/results-r-legacy/
 # Editor / OS
 .Rproj.user
 .DS_Store
+
+*.pdf
+/related-literature/
