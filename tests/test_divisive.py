@@ -24,7 +24,13 @@ from hypothesis import strategies as st
 
 from catci.statistic import ApproxChi
 from catci.calibrate import adaptive_pvalue
-from catci.search import SplitSearch, divisive_search, greedy_search
+from catci.search import (
+    SplitSearch,
+    _divisive_search_loop,
+    divisive_search,
+    divisive_search_paths,
+    greedy_search,
+)
 from catci.structure import Ordinal, Saturated, Tree
 
 
@@ -227,3 +233,23 @@ def test_divisive_calibrates_under_gaussian(kind, max_levels):
     for alpha in (0.05, 0.10, 0.20):
         rate = float(np.mean(pvals < alpha))
         assert abs(rate - alpha) < 0.05, f"rejection rate {rate:.3f} at alpha={alpha}"
+
+
+@pytest.mark.parametrize("dx, dy, kind", [(4, 4, "tree"), (8, 8, "tree"), (8, 4, "tree"),
+                                          (5, 7, "ordinal"), (9, 3, "ordinal")])
+@pytest.mark.parametrize("max_levels", [None, 2, 4])
+def test_vectorised_matches_loop(dx, dy, kind, max_levels):
+    """The batched search reproduces the per-draw reference, draw by draw."""
+    rng = np.random.default_rng(dx * 100 + dy)
+    p = dx * dy
+    A = rng.standard_normal((p + 5, p))
+    Sigma = A.T @ A / (p + 5)
+    xs, ys = (Tree.binary(dx), Tree.binary(dy)) if kind == "tree" else (Ordinal(), Ordinal())
+    T = np.linalg.cholesky(Sigma) @ rng.standard_normal((p, 25))
+    V = divisive_search_paths(T, Sigma, dx, dy, xs, ys, max_levels=max_levels)
+    for b in range(T.shape[1]):
+        ref = _divisive_search_loop(T[:, b], Sigma, dx, dy, xs, ys, max_levels=max_levels)
+        np.testing.assert_allclose(V[:, b], ref.values, rtol=0, atol=1e-12)
+    one = divisive_search(T[:, 0], Sigma, dx, dy, xs, ys, max_levels=max_levels)
+    ref = _divisive_search_loop(T[:, 0], Sigma, dx, dy, xs, ys, max_levels=max_levels)
+    assert one.partitions == ref.partitions
