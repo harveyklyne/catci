@@ -65,15 +65,14 @@ def one_rep(task) -> list[dict]:
     rows = []
     for name, search in searches(args.truncations, args.full).items():
         t0 = time.perf_counter()
-        path = search.prepare(ts.Sigma, args.d, args.d, xs, ys, statistic)
-        observed = path(ts.T_vector)
-        boot = np.column_stack([path(boot_T[:, b]).values for b in range(args.n_boot)])
-        p = double_bootstrap_pvalue(np.asarray(observed.values), boot, rng)
+        T_all = np.column_stack([ts.T_vector, boot_T])
+        paths = search.paths(T_all, ts.Sigma, args.d, args.d, xs, ys, statistic)
+        p = double_bootstrap_pvalue(paths[:, 0], paths[:, 1:], rng)
         rows.append(dict(
             method=name, strength=strength, rep=rep, p_value=p,
-            levels=len(observed.values),
+            levels=paths.shape[0],
             # where the observed path peaks: 0 = the search's first level
-            argmax_level=int(np.argmax(observed.values)),
+            argmax_level=int(np.argmax(paths[:, 0])),
             seconds=time.perf_counter() - t0,
         ))
     return rows
