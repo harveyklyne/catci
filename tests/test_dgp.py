@@ -53,6 +53,9 @@ def test_vee_is_symmetric():
 @pytest.mark.parametrize("setting,dx,dy", [
     ("step", 8, 8), ("step", 6, 4), ("alt", 8, 8), ("alt", 5, 5),
     ("binary_tree", 4, 4), ("binary_tree", 8, 8), ("binary_tree", 16, 16),
+    # the d axis: asymmetric shapes and a small outcome side
+    ("step", 64, 4), ("step", 8, 2), ("step", 9, 3), ("step", 3, 8),
+    ("binary_tree", 16, 4), ("binary_tree", 4, 16), ("binary_tree", 64, 2), ("binary_tree", 32, 8),
 ])
 def test_interaction_zero_margins(setting, dx, dy):
     M = dgp.get_int(setting, dx, dy)
@@ -68,6 +71,37 @@ def test_binary_tree_matches_r_literal_at_d8():
 def test_binary_tree_rejects_non_power_of_two():
     with pytest.raises(ValueError):
         dgp.binary_tree_interaction(6)
+    with pytest.raises(ValueError):
+        dgp.binary_tree_interaction(16, 6)
+    with pytest.raises(ValueError):
+        dgp.binary_tree_interaction(2, 2)
+
+
+@pytest.mark.parametrize("dx,dy", [(8, 2), (8, 3), (4, 3), (7, 2)])
+def test_step_has_signal_for_small_dy(dx, dy):
+    # the R construction built Y from dy // 4 blocks and was identically zero here
+    assert np.abs(dgp.get_int("step", dx, dy)).sum() > 0
+
+
+def test_asymmetric_binary_tree_is_constant_on_tree_blocks():
+    # 32 x 8 shares three levels; the finest shared one (Y sibling leaves) has
+    # weight 0, so every Y sibling pair and every block of 8 X leaves is constant.
+    M = dgp.binary_tree_interaction(32, 8)
+    blocks = M.reshape(4, 8, 4, 2)
+    assert np.all(blocks == blocks[:, :1, :, :1])
+    np.testing.assert_array_equal(dgp.binary_tree_interaction(8, 8), _R_BINARY_TREE_8)
+
+
+@pytest.mark.parametrize("setting", ["lin", "sin"])
+def test_simulate_marginal_matches_joint_margin(setting):
+    # the tuner draws X | Z from simulate_marginal; it must be the law simulate_data uses
+    n, dx, dy = 4000, 16, 4
+    joint = dgp.simulate_data(n, dx, dy, setting, "lin", 1.0, "step", rng=np.random.default_rng(5))
+    marg = dgp.simulate_marginal(n, dx, setting, rng=np.random.default_rng(5))
+    np.testing.assert_array_equal(joint["z"], marg["z"])
+    np.testing.assert_allclose(joint["f"], marg["f"])
+    fx = np.bincount(marg["x"], minlength=dx + 1)[1:] / n
+    np.testing.assert_allclose(fx, marg["f"].mean(axis=0), atol=0.02)
 
 
 # --------------------------------------------------------------------------- #

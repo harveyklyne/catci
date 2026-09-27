@@ -55,6 +55,7 @@ src/catci/
   bootstrap.py   matrix_sqrt + N(0, Sigma) sampling
   calibrate.py   minP calibration of the search path + adaptive_pvalue
   learners.py    Z -> P(label|Z) interface + oracle / xgboost learners
+  tuning.py      K-fold CV tuner for the xgboost learner (sims and real data)
   api.py         catci_test: the public entry point
 
 experiments/
@@ -63,7 +64,10 @@ experiments/
   methods.py     method registry: name -> p-value on a fitted dataset
   run.py         power grids -> parquet + provenance sidecar
   run_size.py    null-calibration (size) runs
-  tuning/        frozen XGBoost hyperparameters, one JSON per marginal setting
+  run_d_axis.py  power/size as dx grows with n, dy fixed (one run.py block per dx)
+  tune.py        tune the learner for a simulated (n, num_class, setting)
+  tune_check.py  score tunings by KL to the true propensities
+  tuning/        XGBoost hyperparameters, one JSON per (n, num_class, setting)
 
 tests/
   fixtures/      the frozen R oracle (see fixtures/README.md)
@@ -196,6 +200,86 @@ reject at level `alpha` at all unless `B >= L/alpha`.
 - `d = 8` was hardcoded into the `sin`/`sig`/`hat` generators. `dgp.py` is
   parametric in `d` throughout.
 
+### Tuning, and what breaks as `d` grows
+
+`catci.tuning.tune_xgboost` picks `(eta, max_depth, gamma, nrounds)` by K-fold
+CV log-loss. `nrounds` is read off the mean validation curve rather than
+gridded. Several simulated replicates are tuned in one `xgb.cv` call, with
+folds kept inside each replicate, so the training size is `(K-1)/K * n` — at
+`n = 1000, K = 5` that is the R tuner's `n_tr = 800`. `experiments/tune.py`
+draws tuning data from `dgp.simulate_marginal`: the interaction preserves both
+margins, so one tuning per `(n, num_class, setting)` serves every interaction,
+strength and partner dimension.
+
+At `n = 1000, d = 8`, the cheap `FAST_GRID` (eta 0.1, 9 points) matches the
+frozen R tuning (eta 0.01, 28 points) on mean `KL(f || f_hat)` to the true
+propensities, and fits 10-40x faster (`tune_check.py`, 20 reps, SE ~0.0007):
+
+| setting | R tuning | fast grid | Z-blind (class freq) |
+|---|---:|---:|---:|
+| sin | 0.0173 | 0.0141 | 0.0200 |
+| sig | 0.0122 | 0.0122 | 0.0192 |
+| lin | 0.0176 | 0.0185 | 0.0331 |
+| vee | 0.0190 | 0.0183 | 0.0424 |
+| hat | 0.0236 | 0.0234 | 0.0733 |
+
+**Learners that treat labels as unrelated classes stop working at large `d`.**
+In these DGPs `X | Z` carries about 0.02 nats/observation over uniform at every
+`d`. That is the same order as the `(d-1)/2n` it costs merely to estimate `d`
+class frequencies. At `n_train = 1600, d = 64` the held-out log-loss is 4.137
+(truth), 4.159 (uniform), 4.184 (class frequencies), and 4.184 for the best
+xgboost round: xgboost initialises from the noisy frequencies and fits `d`
+unrelated per-class ensembles. Multinomial logistic regression, linear or
+spline, is also worse than uniform at `d >= 64` for every `C`, because its
+intercepts are unpenalised. The tuner correctly reports "stop after ~4
+rounds". A learner that shares strength across neighbouring labels (the `lin`
+pmf is a smooth ramp in the label index) would not have this problem. That is
+the same structure the test exploits, and it is item 2's problem. Until then,
+large-`d` simulation runs use `learner="oracle"`, which isolates the test from
+the regression.
+
+**Does the merging advantage widen with `d`? Yes (pilot).** Setup: `lin_lin_step`,
+`n = 2000`, `dy = 4`, oracle propensities, `n_boot = 200`, `alpha = 0.05`, 100
+reps per ordinal cell and 200 per comparator cell. The per-observation signal
+is flat in `d` for `lin`. Reproduce with `run_d_axis.py` and `report_pilot.py`.
+
+| strength | method | dx=8 | 16 | 32 | 64 | 128 | 256 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 0 (size) | ordinal | 0.040 | 0.030 | 0.040 | 0.060 | 0.040 | 0.033 |
+| | euclid | 0.025 | 0.045 | 0.020 | 0.025 | 0.030 | 0.010 |
+| | max | 0.025 | 0.035 | 0.040 | 0.010 | 0.045 | 0.010 |
+| | chi_sq | 0.040 | 0.090 | 0.110 | **0.405** | **0.995** | **1.000** |
+| | mGCM | 0.055 | 0.080 | 0.105 | **0.320** | **0.640** | 0.020\* |
+| 0.6 | ordinal | **0.640** | **0.600** | **0.570** | **0.490** | **0.460** | **0.367** |
+| | euclid | 0.450 | 0.305 | 0.230 | 0.135 | 0.065 | 0.020 |
+| | max | 0.215 | 0.100 | 0.070 | 0.070 | 0.035 | 0.020 |
+| 1.2 | ordinal | **1.000** | **1.000** | **1.000** | **0.980** | **0.970** | **0.633** |
+| | euclid | 0.995 | 0.975 | 0.870 | 0.640 | 0.410 | 0.220 |
+| | max | 0.715 | 0.430 | 0.245 | 0.145 | 0.095 | 0.020 |
+
+The `dx = 256` column has 30 reps per ordinal cell (SE up to ~0.09) and 100
+per comparator cell. Ordinal search stays calibrated across the grid and loses
+little power up to `dx = 128`. At `dx = 256` (`dx*dy = 1024`, about 2
+observations per cell at `n = 2000`) its power at strength 1.2 drops to 0.63.
+That is still ~3x Euclid's there, and ~18x at strength 0.6. Over the grid, at
+strength 0.6, its power over Euclid, the best calibrated unmerged test, grows
+from 1.4x to 18x. \*`mGCM` at `dx = 256` is an artefact: some cells are
+empty, so `diag(Sigma) = 0` and its studentisation divides by zero. The
+pseudo-inverse `chi_sq` competitor and `mGCM` lose
+size control as `dx*dy` approaches `n`, even with oracle propensities (TODO
+0a's `rank(Sigma)/n` effect), so their power at large `dx` is not
+interpretable. `ankan` has no power against this interaction at any `d`.
+
+**Cost.** One replicate is dominated by the search over all `n_boot + 1`
+paths. With the vectorised search, a whole replicate's ordinal paths at
+`dy = 4, n_boot = 200` take ~1.4 s (`dx = 32`), ~6 s (64), ~32 s (128) and
+~4.5 min (256), which is roughly cubic in `dx` (measured under heavy machine
+load). Before vectorisation `dx = 64` was ~4.5 min and `dx = 256` ~4.5 h.
+The dense `Sigma`
+is `(dx*dy)^2`, so symmetric `d` in the hundreds is out of reach whatever the
+speed. The applications are asymmetric (`dx` in the hundreds, `dy` a handful),
+which is why `dx` and `dy` are separate config axes.
+
 ## Testing
 
 `tests/` differential-tests every deterministic seam against the frozen R
@@ -212,11 +296,15 @@ paths. See `tests/fixtures/README.md` for the JSON conventions.
 - **Results are stale.** Every figure in `experiments/results-r-legacy/` came
   from R with cross-fitting. Nothing in the paper yet comes from this code; the
   grid needs re-running with `experiments/run.py`.
-- **`d` is not a real axis.** `dgp.py` is parametric in `d`, but every config is
-  hardcoded to `d = 8`. The motivating example is `dX = 30, dY = 10`.
-- **No tuner.** `experiments/tuning/` holds the frozen hyperparameters for
-  `n = 1000, d = 8`. The R script that produced them was cluster-specific and
-  was not ported, so a new `(n, d)` cannot currently be tuned.
+- **`dx` in the hundreds is feasible but not cheap.** At `dx = 256, dy = 4`
+  a replicate costs ~4.5 min at `n_boot = 200` and ~5x that at 1000, so a full
+  `d` grid needs a cluster or reduced reps at the top end.
+- **No learner for large `d`.** See "Tuning, and what breaks as `d` grows":
+  at `n ~ 2000, d >= 64` both xgboost and multinomial logistic regression are
+  worse than uniform.
+- **`form_t_sigma` materialises the `n x dx*dy` product matrix.** At
+  application scale (`n ~ 7e4, dx*dy ~ 1e3`) that is ~1 GB, doubled by
+  `np.cov`. It will need row-chunking before item 4.
 - **Index convention differs from the paper.** The appendix orders `dXdY`-space
   with `k` fastest; the code uses `j` (X) fastest, inherited from R's Kronecker
   layout. Self-consistent, but update formulae (24)-(27) will not line up
