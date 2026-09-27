@@ -112,8 +112,39 @@ so it was re-run at 1000 reps (`..._size.csv`, SE 0.007): split@2 / @4 / @8
 reject **0.051 / 0.048 / 0.052** at 0.05 (and 0.010 / 0.010 / 0.009 at 0.01,
 0.103 / 0.097 / 0.101 at 0.10). Calibrated; the 100-rep excess was noise.
 
+### Union of paths (d = 8, binary_tree) -- no gain
+
+`merge+split@k` stacks the merge path and the split@k path into one minP (still
+exact: a deterministic map of T). Same seed as the table above, so the base
+methods reproduce it exactly:
+
+| strength | merge | split@2 | merge+split@2 | merge+split@4 | merge+split@8 |
+|---|---:|---:|---:|---:|---:|
+| 0 (size) | 0.060 | 0.045 | 0.055 | 0.060 | 0.060 |
+| 0.4 | 0.280 | 0.350 | 0.280 | 0.280 | 0.280 |
+| 0.6 | 0.520 | 0.665 | 0.520 | 0.525 | 0.510 |
+| 0.8 | 0.820 | 0.890 | 0.820 | 0.820 | 0.815 |
+
+The union is merge, to the rep. It is *not* because the two searches visit the
+same partitions: split@2's level-1 / level-2 partitions are also on the merge
+path only ~53% / ~34% of the time (200 datasets, null and strength 0.6; level 0
+is the tree root, shared by construction). The divisive search does find
+different coarse partitions -- they just carry no extra signal once pooled with
+merge's 13 levels. Truncation's gain is **entirely multiplicity**: calibrating
+over 3 levels instead of 13. `alt` union not run; since the union contains the
+whole merge path it should track merge there too (prediction, not measured).
+
+Implication: the lever is not the search direction but *how the minP spreads
+its budget over depths*. A weighted minP (more weight on coarse levels) run on
+the ordinary merge path would test that directly and needs no divisive search.
+
+End-to-end cost of this run: 237 s vs 1284 s for the same run before master's
+vectorised merge landed.
+
 ### Still open
 
+0. Weighted minP over depths on the merge path (see above) -- likely the real
+   follow-up; belongs with the calibration work (TODO 0b / `MINP.md`).
 1. d = 32 power; `alt` at d = 16 (expect the same collapse as d = 8).
 2. Ordinal structure power (step interaction) -- not run.
 3. `experiments/bench_search.py`: master's version was kept at the rebase; the
