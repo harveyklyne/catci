@@ -12,7 +12,9 @@ DGP fixes applied:
   cross-family pairs (e.g. ``x="lin", y="sin"``) no longer crash.
 * **2c** -- nothing is hardcoded to ``d = 8``: sin/sig breakpoints come from
   ``norm.ppf`` on an equally-spaced grid, and the binary-tree interaction is
-  built by recursive Kronecker construction for any power-of-two ``d``.
+  built from tree contrasts for any power-of-two ``dx``, ``dy`` (not
+  necessarily equal).
+* The ``step`` interaction no longer vanishes for ``dy in {2, 3}``.
 
 This module lives in ``experiments/`` (not the ``catci`` method library): the
 method knows nothing about how data is simulated.
@@ -28,6 +30,7 @@ from scipy.stats import norm
 
 __all__ = [
     "simulate_data",
+    "simulate_marginal",
     "z_correlated_normal",
     "lin_pdf",
     "vee_pdf",
@@ -140,8 +143,20 @@ def marginal_matrix(setting: str, d: int, z_col: np.ndarray, rng: np.random.Gene
 # Interaction matrices (parametric in d), all with zero row/column sums
 # --------------------------------------------------------------------------- #
 def _get_int_step(dx: int, dy: int) -> np.ndarray:
+    """X: a step (low half vs high half). Y: a vee over quarters, ``+ - (0) - +``.
+
+    The vee needs ``dy >= 4``; below that the quarter blocks are empty and the R
+    construction returned the zero matrix -- no signal at any strength. For
+    ``dy in {2, 3}`` Y falls back to a single step, ``+ (0) -``, so the pattern
+    is still a 2x2 block contrast.
+    """
+    if dx < 2 or dy < 2:
+        raise ValueError("step interaction needs dx, dy >= 2.")
     outcol = [-1] * (dx // 2) + [0] * (dx % 2) + [1] * (dx // 2)
     rc = outcol[::-1]
+    if dy < 4:
+        outall = outcol + [0] * (dx * (dy % 2)) + rc
+        return np.array(outall, dtype=float).reshape(dx, dy, order="F")
     outall = (
         outcol * (dy // 4)
         + rc * (dy // 4)
@@ -164,29 +179,41 @@ def _get_int_alt(dx: int, dy: int) -> np.ndarray:
     return np.array(outall, dtype=float).reshape(dx, dy, order="F")
 
 
-def binary_tree_interaction(d: int) -> np.ndarray:
-    """Hierarchical interaction over a balanced binary tree, any power-of-two ``d >= 4``.
+def _haar(d: int, ell: int) -> np.ndarray:
+    """Level-``ell`` tree contrast on ``d = 2^L`` leaves: ``1^{(ell-1)} (x) h (x) 1^{(L-ell)}``, ``h = (1, -1)``.
 
-    Recursive Kronecker construction (fix 2c). With ``H = [[1,-1],[-1,1]]`` and
-    ``J = ones(2,2)``, start from the coarsest split ``-H`` and at each finer
-    level ``ell`` form ``kron(T, J) - w_ell * kron(J^{otimes (ell-1)}, H)``. The
-    finest level carries weight 0 (true sibling leaves are exchangeable) and
-    coarser levels decay geometrically (``0.1^{ell-1}``). At ``d = 8`` this
-    reproduces the hand-coded R matrix exactly. Rows and columns sum to zero.
+    ``+1`` under the left child and ``-1`` under the right child of every
+    depth-``(ell-1)`` node, so level 1 is low half vs high half.
     """
-    if d < 4 or (d & (d - 1)) != 0:
-        raise ValueError("binary_tree interaction needs d a power of two, d >= 4.")
     L = int(round(np.log2(d)))
-    H = np.array([[1.0, -1.0], [-1.0, 1.0]])
-    J = np.ones((2, 2))
-    T = -H  # coarsest 2-way split
-    for ell in range(2, L + 1):
-        coarse = np.kron(T, J)
-        w = 0.0 if ell == L else 0.1 ** (ell - 1)
-        Jpow = np.array([[1.0]])
-        for _ in range(ell - 1):
-            Jpow = np.kron(Jpow, J)
-        T = coarse - w * np.kron(Jpow, H)
+    return np.kron(np.kron(np.ones(2 ** (ell - 1)), [1.0, -1.0]), np.ones(2 ** (L - ell)))
+
+
+def binary_tree_interaction(dx: int, dy: int | None = None) -> np.ndarray:
+    """Hierarchical interaction over balanced binary trees on X and Y.
+
+    ``T = - sum_ell w_ell a_ell^X (a_ell^Y)^T`` over tree levels
+    ``ell = 1, ..., min(Lx, Ly)``, where ``a_ell`` is the level-``ell`` contrast
+    (:func:`_haar`). The coarsest level has weight 1, finer levels decay
+    geometrically (``0.1^{ell-1}``), and the finest shared level has weight 0 --
+    on the smaller side those are sibling leaves, which should be exchangeable so
+    that merging them loses nothing. Rows and columns sum to zero.
+
+    For ``dx == dy`` this is the recursive Kronecker construction of fix 2c
+    (``kron(T, J) - w_ell kron(J^{(ell-1)}, H)`` with ``H = h h^T``,
+    ``J = 1 1^T``) written as a sum of outer products, and at ``d = 8`` it
+    reproduces the hand-coded R matrix exactly. ``dx != dy`` needs both to be
+    powers of two, ``>= 2``, with ``max(dx, dy) >= 4``.
+    """
+    dy = dx if dy is None else dy
+    pow2 = lambda d: d >= 2 and (d & (d - 1)) == 0
+    if not (pow2(dx) and pow2(dy)) or max(dx, dy) < 4:
+        raise ValueError("binary_tree interaction needs dx, dy powers of two, >= 2, max(dx, dy) >= 4.")
+    L = int(round(np.log2(min(dx, dy))))
+    T = np.zeros((dx, dy))
+    for ell in range(1, L + 1):
+        w = 1.0 if ell == 1 else (0.0 if ell == L else 0.1 ** (ell - 1))
+        T -= w * np.outer(_haar(dx, ell), _haar(dy, ell))
     return T
 
 
@@ -196,9 +223,7 @@ def get_int(setting: str, dx: int, dy: int) -> np.ndarray:
     if setting == "alt":
         return _get_int_alt(dx, dy)
     if setting == "binary_tree":
-        if dx != dy:
-            raise ValueError("binary_tree interaction requires dx == dy.")
-        return binary_tree_interaction(dx)
+        return binary_tree_interaction(dx, dy)
     raise ValueError(f"Setting not recognised: {setting!r}")
 
 
@@ -222,6 +247,22 @@ def _sample_categorical(probs: np.ndarray, rng: np.random.Generator) -> np.ndarr
     cum = np.cumsum(probs, axis=1)
     u = rng.random(probs.shape[0])
     return (u[:, None] < cum).argmax(axis=1)
+
+
+def simulate_marginal(n: int, d: int, setting: str, rng: np.random.Generator, column: int = 0) -> dict:
+    """Draw ``(Z, X)`` from the law of one variable given ``Z`` in :func:`simulate_data`.
+
+    Every interaction has zero row and column sums, so the joint in
+    :func:`simulate_data` preserves both margins exactly: ``X | Z`` has pmf
+    ``marginal_matrix(xsetting, dx, Z[:, 0])`` whatever ``strength``,
+    ``intsetting`` or ``dy`` are (and ``Y | Z`` likewise with ``Z[:, 1]``).
+    So a propensity learner can be tuned on this, without ever forming the
+    ``dx * dy`` joint -- which is what makes tuning at large ``d`` cheap.
+    """
+    z = z_correlated_normal(n, 5, 0.5, rng)
+    f = marginal_matrix(setting, d, z[:, column], rng)
+    x = _sample_categorical(f, rng) + 1
+    return {"z": z, "x": x, "f": f}
 
 
 def simulate_data(

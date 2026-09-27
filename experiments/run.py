@@ -6,9 +6,15 @@ commit, package versions, seed and runtime -- so a figure is reproducible from
 files, not from an editing session.
 
 Usage:
-    python run.py <config-name> [--reps N] [--strengths a,b,c] [--workers W] [--seed S]
+    python run.py <config-name> [--learner mlp xgb oracle] [--n N] [--d D | --dx DX --dy DY]
+                  [--reps N] [--strengths a,b,c] [--methods m1,m2] [--n-boot B]
+                  [--tag T] [--workers W] [--seed S]
 
-<config-name> is "<x>_<y>_<int>", e.g. lin_lin_binary_tree.
+<config-name> is "<x>_<y>_<int>", e.g. lin_lin_binary_tree. ``--n/--d/--dx/--dy``
+move it along the size axes (default ``n = 1000, d = 8``); ``--methods`` replaces
+the method list (adaptive and competitor names may be mixed). One run per
+``--learner`` (default ``mlp xgb``), paired on the same data; each writes its own
+learner-tagged parquet, e.g. ``power_lin_lin_step__mlp``.
 """
 
 from __future__ import annotations
@@ -27,10 +33,23 @@ import pandas as pd
 
 import dgp
 import methods
-from config import Config, REPO_ROOT, power_config
-from catci.learners import fit_propensities, xgboost_learner
+from config import Config, DEFAULT_LEARNER, LEARNERS, REPO_ROOT, power_config, with_tag
+from catci.learners import fit_propensities, mlp_learner, oracle_learner, xgboost_learner
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
+
+LEARNER_FNS = {"xgb": xgboost_learner, "mlp": mlp_learner}
+
+
+def _build_learner(cfg: Config, setting: str, num_class: int, true_probs: np.ndarray):
+    """The propensity learner named by ``cfg.learner``, with its tuned params.
+
+    ``oracle`` hands back the DGP's own propensities -- the E_f = 0 floor, useful
+    for separating "the learner is the bottleneck" from "the test is".
+    """
+    if cfg.learner == "oracle":
+        return oracle_learner(true_probs)
+    return LEARNER_FNS[cfg.learner](cfg.learner_params(setting, num_class))
 
 
 def _one_replicate(cfg: Config, strength: float, rep: int, seed_seq) -> list[dict]:
@@ -38,21 +57,25 @@ def _one_replicate(cfg: Config, strength: float, rep: int, seed_seq) -> list[dic
     rng = np.random.default_rng(seed_seq)
 
     data = dgp.simulate_data(
-        cfg.n, cfg.d, cfg.d, cfg.xsetting, cfg.ysetting,
+        cfg.n, cfg.dx, cfg.dy, cfg.xsetting, cfg.ysetting,
         strength=strength, intsetting=cfg.intsetting, permute=False, rng=rng,
     )
 
     # fit f (X|Z) and g (Y|Z) on the full sample with the per-setting tuned learners
-    f = fit_propensities(data["z"], data["x"], cfg.d, xgboost_learner(cfg.xgb_params(cfg.xsetting)))
-    g = fit_propensities(data["z"], data["y"], cfg.d, xgboost_learner(cfg.xgb_params(cfg.ysetting)))
+    z = data["z"]
+    if cfg.learner == "oracle":
+        # oracle_learner indexes true_probs by row id, so feed it row ids as z
+        z = np.arange(cfg.n)
+    f = fit_propensities(z, data["x"], cfg.dx, _build_learner(cfg, cfg.xsetting, cfg.dx, data["f"]))
+    g = fit_propensities(z, data["y"], cfg.dy, _build_learner(cfg, cfg.ysetting, cfg.dy, data["g"]))
 
-    fitted = methods.Fitted.build(data["x"], data["y"], data["z"], f, g, cfg.d, cfg.d, cfg.normalise)
+    fitted = methods.Fitted.build(data["x"], data["y"], data["z"], f, g, cfg.dx, cfg.dy, cfg.normalise)
 
     pvals = {}
     pvals.update(methods.adaptive_pvalues(fitted, cfg.adaptive, cfg.n_boot, rng))
     pvals.update(methods.competitor_pvalues(fitted, cfg.competitors, rng))
 
-    base = dict(name=cfg.name, n=cfg.n, d=cfg.d, xsetting=cfg.xsetting,
+    base = dict(name=cfg.name, learner=cfg.learner, n=cfg.n, dx=cfg.dx, dy=cfg.dy, xsetting=cfg.xsetting,
                 ysetting=cfg.ysetting, intsetting=cfg.intsetting, strength=strength, rep=rep)
     return [dict(base, method=m, p_value=p) for m, p in pvals.items()]
 
@@ -67,6 +90,9 @@ def _task(args):
 
 def run(cfg: Config, workers: int = 5, seed: int = 0) -> pd.DataFrame:
     RESULTS_DIR.mkdir(exist_ok=True)
+    for setting, d in ((cfg.xsetting, cfg.dx), (cfg.ysetting, cfg.dy)):
+        if cfg.learner != "oracle":
+            cfg.learner_params(setting, d)  # fail now, not once per replicate, if a tuning is missing
     tasks = []
     ss = np.random.SeedSequence(seed)
     # one independent child seed per (strength, rep), spawned deterministically
@@ -84,7 +110,9 @@ def run(cfg: Config, workers: int = 5, seed: int = 0) -> pd.DataFrame:
             rows.extend(_task(t))
     else:
         import multiprocessing as mp
-        ctx = mp.get_context("fork")
+        # "spawn", not "fork": the MLP learner's BLAS threads make a forked child
+        # abort in the macOS Objective-C runtime.
+        ctx = mp.get_context("spawn")
         with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as ex:
             for res in ex.map(_task, tasks, chunksize=4):
                 rows.extend(res)
@@ -125,30 +153,55 @@ def _write_provenance(cfg, df, elapsed, workers, seed, out_parquet):
     (out_parquet.with_suffix(".provenance.json")).write_text(json.dumps(prov, indent=2))
 
 
-def _parse_config(name: str, reps=None, strengths=None) -> Config:
+def _parse_config(name: str, reps=None, strengths=None, methods_=None, n_boot=None,
+                  learner=DEFAULT_LEARNER, **dims) -> Config:
     parts = name.split("_")
     # intsetting may itself contain '_' (binary_tree)
     xsetting, ysetting, intsetting = parts[0], parts[1], "_".join(parts[2:])
-    cfg = power_config(xsetting, ysetting, intsetting)
+    cfg = power_config(xsetting, ysetting, intsetting, learner=learner,
+                       **{k: v for k, v in dims.items() if v is not None})
     over = {}
     if reps is not None:
         over["reps"] = reps
     if strengths is not None:
         over["strengths"] = strengths
+    if n_boot is not None:
+        over["n_boot"] = n_boot
+    if methods_ is not None:
+        unknown = set(methods_) - set(methods.ADAPTIVE) - set(methods.COMPETITORS)
+        if unknown:
+            raise ValueError(f"Unknown methods: {sorted(unknown)}")
+        over["adaptive"] = [m for m in methods_ if m in methods.ADAPTIVE]
+        over["competitors"] = [m for m in methods_ if m in methods.COMPETITORS]
     return replace(cfg, **over) if over else cfg
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("config")
+    ap.add_argument("--n", type=int, default=None)
+    ap.add_argument("--d", type=int, default=None, help="sets dx = dy = d")
+    ap.add_argument("--dx", type=int, default=None)
+    ap.add_argument("--dy", type=int, default=None)
+    ap.add_argument("--methods", type=str, default=None, help="comma-separated; replaces the default list")
+    ap.add_argument("--n-boot", type=int, default=None)
+    ap.add_argument("--tag", type=str, default=None,
+                    help="appended to the results name, so a partial run cannot overwrite a full one")
     ap.add_argument("--reps", type=int, default=None)
     ap.add_argument("--strengths", type=str, default=None, help="comma-separated, e.g. 0.6,1.0,1.4")
     ap.add_argument("--workers", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--learner", nargs="+", choices=[*LEARNERS, "oracle"], default=list(LEARNERS),
+                    help="one run per learner, paired on the same data (default: mlp xgb)")
     args = ap.parse_args()
     strengths = [float(s) for s in args.strengths.split(",")] if args.strengths else None
-    cfg = _parse_config(args.config, reps=args.reps, strengths=strengths)
-    run(cfg, workers=args.workers, seed=args.seed)
+    for learner in args.learner:
+        cfg = _parse_config(
+            args.config, reps=args.reps, strengths=strengths, n_boot=args.n_boot,
+            methods_=args.methods.split(",") if args.methods else None, learner=learner,
+            n=args.n, d=args.d, dx=args.dx, dy=args.dy,
+        )
+        run(with_tag(cfg, args.tag), workers=args.workers, seed=args.seed)
 
 
 if __name__ == "__main__":

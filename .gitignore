@@ -13,6 +13,7 @@ dist/
 !SEARCH.md
 !SEARCH_COMPARISON.md
 !tests/fixtures/README.md
+!NOTES-mlp-learner.md
 
 # Simulation output (regenerate with experiments/run.py)
 experiments/results/
