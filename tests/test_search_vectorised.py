@@ -12,7 +12,7 @@ import pytest
 
 from catci.gcm import form_t_sigma
 from catci.search import _greedy_search_loop, greedy_search, greedy_search_paths
-from catci.structure import Ordinal, Saturated, Tree, TreeNode, _make_leaf, _make_parent
+from catci.structure import Cyclic, Ordinal, Saturated, Tree, TreeNode, _make_leaf, _make_parent
 
 SHAPES = [(3, 3), (4, 7), (7, 4), (6, 6), (9, 3), (8, 8)]
 
@@ -23,6 +23,7 @@ def _structures(name, dx, dy):
         "greedy": lambda: (Saturated(), Saturated()),
         "tree": lambda: (Tree.binary(dx), Tree.binary(dy)),
         "mixed": lambda: (Tree.binary(dx), Ordinal()),
+        "cyclic": lambda: (Cyclic(), Cyclic()),
     }[name]()
 
 
@@ -41,7 +42,7 @@ def _assert_same(res, ref):
     assert res.partitions == ref.partitions
 
 
-@pytest.mark.parametrize("name", ["ordinal", "greedy", "tree", "mixed"])
+@pytest.mark.parametrize("name", ["ordinal", "greedy", "tree", "mixed", "cyclic"])
 @pytest.mark.parametrize("dx,dy", SHAPES)
 def test_matches_loop(name, dx, dy):
     rng = np.random.default_rng(1000 * dx + dy)
@@ -78,7 +79,7 @@ def test_nary_tree_fallback():
                      _greedy_search_loop(T, Sigma, 7, 5, xs, Ordinal()))
 
 
-@pytest.mark.parametrize("name", ["ordinal", "greedy", "tree"])
+@pytest.mark.parametrize("name", ["ordinal", "greedy", "tree", "cyclic"])
 def test_batch_matches_columns(name):
     # Draws take different paths inside one chunk; each column must equal its own search.
     rng = np.random.default_rng(11)
@@ -109,7 +110,9 @@ def test_permitted_mask_matches_permitted_merges():
     # The vectorised masks must agree with permitted_merges on arbitrary reachable partitions.
     rng = np.random.default_rng(2)
     d = 9
-    for structure in (Ordinal(), Saturated(), Tree.binary(d)):
+    leaves = [_make_leaf(i) for i in range(1, d + 1)]
+    nary = Tree(_make_parent([_make_parent(leaves[0:4]), _make_parent(leaves[4:6]), *leaves[6:]]))
+    for structure in (Ordinal(), Saturated(), Tree.binary(d), Cyclic(), nary):
         partition = [[i] for i in range(1, d + 1)]
         while True:
             pairs = structure.permitted_merges(partition)
@@ -131,7 +134,7 @@ def test_permitted_mask_matches_permitted_merges():
 
 @pytest.mark.parametrize("sparse", [(False, False), (True, True), (True, False), (False, True)])
 @pytest.mark.parametrize("threshold", [0.0, 0.6, 1.0])  # never / default / every level
-@pytest.mark.parametrize("name", ["greedy", "tree", "ordinal"])
+@pytest.mark.parametrize("name", ["greedy", "tree", "ordinal", "cyclic"])
 def test_every_mode_matches_loop(name, sparse, threshold):
     # Both carrying modes and every compaction schedule must give the same paths, on
     # any structure -- the default only picks between them for speed.

@@ -253,3 +253,13 @@ def test_vectorised_matches_loop(dx, dy, kind, max_levels):
     one = divisive_search(T[:, 0], Sigma, dx, dy, xs, ys, max_levels=max_levels)
     ref = _divisive_search_loop(T[:, 0], Sigma, dx, dy, xs, ys, max_levels=max_levels)
     assert one.partitions == ref.partitions
+
+
+def test_divisive_refuses_nary_trees():
+    """Tree.from_parents can build n-ary trees; splitting one node three ways is not a split."""
+    from catci.structure import TreeNode
+
+    leaves = tuple(TreeNode(root=(k,), children=()) for k in (1, 2, 3))
+    tree = Tree(TreeNode(root=(1, 2, 3), children=leaves))
+    with pytest.raises(ValueError, match="binary"):
+        tree.coarsest_partitions(3)
