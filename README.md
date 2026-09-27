@@ -51,7 +51,8 @@ src/catci/
   structure.py   Ordinal / Cyclic / Saturated / Tree: permitted_merges()
   merging.py     rank-one update formulae (24)-(27)                [pure]
   statistic.py   ApproxChi init/update/value + depth-0 comparators
-  search.py      greedy_search: the adaptive label-merging path
+  search.py      greedy_search: the adaptive label-merging path; also beam
+                 search, random merge paths and fixed-path scoring (comparators)
   bootstrap.py   matrix_sqrt + N(0, Sigma) sampling
   calibrate.py   minP calibration of the search path + adaptive_pvalue
   learners.py    Z -> P(label|Z) interface + oracle / xgboost learners
@@ -63,6 +64,8 @@ experiments/
   methods.py     method registry: name -> p-value on a fitted dataset
   run.py         power grids -> parquet + provenance sidecar
   run_size.py    null-calibration (size) runs
+  search_study.py     Gaussian-limit power study: greedy vs beam / random / split
+  summarise_search.py paired rejection-rate differences for search_study output
   tuning/        frozen XGBoost hyperparameters, one JSON per marginal setting
 
 tests/
@@ -187,6 +190,26 @@ Two practical consequences of the `1/(B+1)` grid:
 `bonferroni_pvalue` is the comparator: the same statistic path under simple FWER
 control, `min(1, L * min_l p_l)`. Its floor is `L/(B+1)`, so unlike minP it cannot
 reject at level `alpha` at all unless `B >= L/alpha`.
+
+### Greedy is the search; the alternatives are comparators
+
+`search.py` also carries three alternatives to the greedy argmax, all over the
+same candidate set and all calibrated by the same minP test: `beam_search_paths`
+(keep the top `w` partition pairs per level; `w = 1` is greedy, bit for bit, as it
+runs through the same vectorised kernel), `random_merges` (a path drawn without
+looking at the data) and `evaluate_paths` (score a fixed path for every draw —
+used for random paths and for paths chosen on an independent half sample). Any
+such map is valid as long as every draw goes through the same one, or is
+randomised independently of `T`; `adaptive_pvalue(..., search=...)` accepts it.
+
+None of them beats greedy (Gaussian-limit study, `d = 8`): a width-25 beam gains
+nothing even on a signal built to mislead greedy; a random path costs 7–25
+points of power unless the structure (a binary tree) fixes where every path
+ends; sample splitting costs 8–35. `catci_test` therefore stays greedy-only.
+Setup and tables: `SEARCH_COMPARISON.md` (greedy vs random vs split, written for
+the paper) and `SEARCH.md` (all three, including beam). Those numbers are
+exploratory — mixed reps and `n_boot` across cells — and need a uniform rerun
+before they are cited.
 
 ### DGP fixes carried into the port
 

@@ -45,7 +45,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
 
@@ -53,7 +53,18 @@ from . import merging
 from .statistic import ApproxChi, approx_chi_array
 from .structure import Structure
 
-__all__ = ["SearchResult", "greedy_search", "greedy_search_paths"]
+__all__ = [
+    "SearchResult",
+    "greedy_search",
+    "greedy_search_paths",
+    "beam_search",
+    "beam_search_paths",
+    "random_merges",
+    "evaluate_path",
+    "evaluate_paths",
+]
+
+Merge = Tuple[int, int, int]  # (dimension, i, j): 1 = X / 2 = Y, 1-based positions i < j
 
 # Budget for one chunk's per-draw merged Sigmas (``8 p^2`` bytes each). Measured best
 # at every d tried (8-32): larger chunks spill the per-merge temporaries out of cache.
@@ -66,6 +77,7 @@ COMPACT_THRESHOLD = 0.6
 class SearchResult:
     values: List[float] = field(default_factory=list)
     partitions: List[dict] = field(default_factory=list)
+    merges: List[Merge] = field(default_factory=list)  # the merge applied at each level
 
 
 def _copy_partition(partition: dict) -> dict:
@@ -98,17 +110,16 @@ def greedy_search(
     T_vector = np.asarray(T_vector, dtype=float)
     shared = _Shared(Sigma, dx, dy)
     values, merges = _run_chunk(shared, T_vector[:, None], x_structure, y_structure)
+    return _result(values[:, 0], [(dim + 1, i, j) for dim, i, j in merges], dx, dy)
 
-    partition = {
-        "x": [[j] for j in range(1, dx + 1)],
-        "y": [[k] for k in range(1, dy + 1)],
-    }
-    result = SearchResult(values=[float(v) for v in values[:, 0]])
+
+def _result(values, merges: List[Merge], dx: int, dy: int) -> SearchResult:
+    """A :class:`SearchResult` for one draw: its values, merges, and the partitions they visit."""
+    partition = _initial_partition(dx, dy)
+    result = SearchResult(values=[float(v) for v in values], merges=list(merges))
     result.partitions.append(_copy_partition(partition))
-    for dim, i, j in merges:
-        groups = partition["xy"[dim]]
-        groups[i - 1] = groups[i - 1] + groups[j - 1]
-        del groups[j - 1]
+    for merge in merges:
+        partition = _apply(partition, merge)
         result.partitions.append(_copy_partition(partition))
     return result
 
@@ -480,6 +491,40 @@ def _other_axis_sparse(st, o, idx, R):
     st.dT[o][rows, h, g] += 2.0 * (R.Buv[i, h, g] + R.Bvu[i, h, g])
 
 
+def _default_sparse(shared: _Shared, structures) -> tuple:
+    """Sparse carrying per dimension when the structure permits at most ``2 d`` pairs."""
+    return tuple(
+        int(s.permitted_mask(np.ones((1, d), dtype=np.int64), np.arange(d)[None, :]).sum()) <= 2 * d
+        for s, d in zip(structures, (shared.dx, shared.dy))
+    )
+
+
+def _candidate_values(st: _State, structures):
+    """Every candidate merge of every row, scored: ``(V, parts, dims, offset)``.
+
+    ``V`` is ``(n, dx_pad^2 + dy_pad^2)``: X pairs row-major, then Y pairs, ``-inf``
+    where not permitted -- so a first max over a row is R's tie-break. ``parts``
+    holds the per-dimension deltas needed to apply the winner.
+    """
+    dims = st.lab[0].shape[1], st.lab[1].shape[1]  # current padded sizes
+    offset = dims[0] * dims[0]
+    V = np.full((st.n, offset + dims[1] * dims[1]), -np.inf)
+    parts = []
+    for dim in (0, 1):
+        mask = st.permitted(dim, structures[dim])
+        if st.sparse[dim]:
+            st.refresh(dim, mask)
+        deltas = _deltas(st, dim)
+        b, j, m = np.nonzero(mask)
+        vals = approx_chi_array(st.normsq[b] + deltas[0][b, j, m],
+                                st.tr[b] + deltas[1][b, j, m],
+                                st.tr2[b] + deltas[2][b, j, m])
+        vals[np.isnan(vals)] = -np.inf
+        V[b, dim * offset + j * dims[dim] + m] = vals
+        parts.append(deltas)
+    return V, parts, dims, offset
+
+
 def _run_chunk(shared: _Shared, T: np.ndarray, x_structure: Structure, y_structure: Structure,
                compact_threshold: float = COMPACT_THRESHOLD, sparse=None):
     """Search every column of ``T``; returns ``(values (L+1, n), merges)``.
@@ -491,13 +536,8 @@ def _run_chunk(shared: _Shared, T: np.ndarray, x_structure: Structure, y_structu
     pairs of the finest partition.
     """
     structures = (x_structure, y_structure)
-    dims0 = (shared.dx, shared.dy)
     if sparse is None:
-        sparse = tuple(
-            int(s.permitted_mask(np.ones((1, d), dtype=np.int64),
-                                 np.arange(d)[None, :]).sum()) <= 2 * d
-            for s, d in zip(structures, dims0)
-        )
+        sparse = _default_sparse(shared, structures)
     st = _State(shared, T, sparse)
     n = st.n
     r = np.arange(n)
@@ -506,22 +546,7 @@ def _run_chunk(shared: _Shared, T: np.ndarray, x_structure: Structure, y_structu
     merges = []
     with np.errstate(divide="ignore", invalid="ignore"):
         while True:
-            dims = st.lab[0].shape[1], st.lab[1].shape[1]  # current padded sizes
-            offset = dims[0] * dims[0]
-            V = np.full((n, offset + dims[1] * dims[1]), -np.inf)
-            parts = []
-            for dim in (0, 1):
-                mask = st.permitted(dim, structures[dim])
-                if st.sparse[dim]:
-                    st.refresh(dim, mask)
-                deltas = _deltas(st, dim)
-                b, j, m = np.nonzero(mask)
-                vals = approx_chi_array(st.normsq[b] + deltas[0][b, j, m],
-                                        st.tr[b] + deltas[1][b, j, m],
-                                        st.tr2[b] + deltas[2][b, j, m])
-                vals[np.isnan(vals)] = -np.inf
-                V[b, dim * offset + j * dims[dim] + m] = vals
-                parts.append(deltas)
+            V, parts, dims, offset = _candidate_values(st, structures)
             has = np.isfinite(V).any(axis=1)
             if not has.any():
                 break
@@ -548,6 +573,331 @@ def _run_chunk(shared: _Shared, T: np.ndarray, x_structure: Structure, y_structu
             for dim in (0, 1):
                 st.compact(dim, compact_threshold)
     return np.vstack(values), merges
+
+
+# --------------------------------------------------------------------------- #
+# Alternative searches (TODO item 7)
+# --------------------------------------------------------------------------- #
+#
+# * Beam search keeps the top ``width`` distinct partition pairs per level instead
+#   of greedy's one. It is the same kernel: each draw owns ``width`` rows of the
+#   batched state, the level's candidates are pooled over those rows, and the
+#   ``width`` best distinct children become the next level's rows -- greedy is the
+#   ``width = 1`` case of the same code, so it is reproduced bit for bit.
+# * A fixed merge path -- drawn by :func:`random_merges` without looking at the
+#   data, or chosen by greedy on an independent half sample -- needs no search:
+#   :func:`evaluate_paths` scores it for every draw at once. The trace terms depend
+#   only on ``Sigma`` and the path, so a level costs one pass over ``T``.
+#
+# Each is a map ``(T, Sigma) -> `` statistic path, randomised (if at all) only
+# through draws independent of ``T``, so :mod:`catci.calibrate` covers them as-is.
+
+
+def beam_search(
+    T_vector: np.ndarray,
+    Sigma: np.ndarray,
+    dx: int,
+    dy: int,
+    x_structure: Structure,
+    y_structure: Structure,
+    width: int,
+) -> SearchResult:
+    """Beam search of width ``width`` over the greedy candidate set, one draw.
+
+    The value at each depth is the best found at that depth; ``partitions`` /
+    ``merges`` record the state attaining it, so for ``width > 1`` they need not form
+    a single nested chain. ``width = 1`` is :func:`greedy_search` exactly.
+    """
+    T_vector = np.asarray(T_vector, dtype=float)
+    shared = _Shared(Sigma, dx, dy)
+    values, merges = _run_beam_chunk(shared, T_vector[:, None], x_structure, y_structure, width)
+    result = SearchResult(values=[float(v) for v in values[:, 0]], merges=merges)
+    for depth in range(len(values)):  # the best state at each depth, rebuilt from its lineage
+        partition = _initial_partition(dx, dy)
+        for merge in merges[depth]:
+            partition = _apply(partition, merge)
+        result.partitions.append(partition)
+    result.merges = [m[-1] for m in merges[1:]]  # the last merge into each depth's best
+    return result
+
+
+def beam_search_paths(
+    T: np.ndarray,
+    Sigma: np.ndarray,
+    dx: int,
+    dy: int,
+    x_structure: Structure,
+    y_structure: Structure,
+    width: int,
+    *,
+    chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+    n_jobs: int = 1,
+) -> np.ndarray:
+    """Statistic paths of the width-``width`` beam search for every column of ``T``.
+
+    As :func:`greedy_search_paths`, which it equals at ``width = 1``; cost and memory
+    are about ``width`` times greedy's.
+    """
+    if width < 1:
+        raise ValueError("width must be >= 1.")
+    T = np.asarray(T, dtype=float)
+    if T.ndim == 1:
+        T = T[:, None]
+    p, B = T.shape
+    if p != dx * dy:
+        raise ValueError("T must have dx*dy rows.")
+    shared = _Shared(Sigma, dx, dy)
+    if n_jobs == -1:
+        n_jobs = os.cpu_count() or 1
+    chunk = int(max(1, min(-(-B // n_jobs), chunk_bytes // (8 * p * p * width))))
+    slices = [slice(s, min(s + chunk, B)) for s in range(0, B, chunk)]
+
+    def run(sl):
+        return _run_beam_chunk(shared, T[:, sl], x_structure, y_structure, width)[0]
+
+    if n_jobs == 1 or len(slices) == 1:
+        outs = [run(sl) for sl in slices]
+    else:
+        with ThreadPoolExecutor(max_workers=n_jobs) as pool:
+            outs = list(pool.map(run, slices))
+    return np.concatenate(outs, axis=1)
+
+
+def _take(st: _State, rows: np.ndarray) -> _State:
+    """A new state holding copies of ``st``'s rows ``rows`` (in that order)."""
+    out = object.__new__(_State)
+    out.n = rows.shape[0]
+    out.sparse = st.sparse
+    out.compacted = list(st.compacted)
+    for name in ("S", "M", "normsq", "tr", "tr2"):
+        setattr(out, name, getattr(st, name)[rows])
+    for name in ("C", "T1", "T2", "dT", "D", "valid", "sizes", "gid", "lab"):
+        setattr(out, name, [a[rows] for a in getattr(st, name)])
+    return out
+
+
+def _run_beam_chunk(shared: _Shared, T: np.ndarray, x_structure: Structure,
+                    y_structure: Structure, width: int,
+                    compact_threshold: float = COMPACT_THRESHOLD):
+    """Beam-search every column of ``T``; returns ``(values (L+1, n), lineages)``.
+
+    Rows are draw-major, ``width`` per draw: row ``b * width + k`` is draw ``b``'s
+    ``k``-th best state. A draw with fewer distinct children than ``width`` pads with
+    copies of its best, marked dead so they never compete. ``lineages`` is filled
+    only when ``n == 1``: per depth, the merge sequence (``(dimension, i, j)``,
+    1-based) leading to that depth's best state.
+    """
+    structures = (x_structure, y_structure)
+    n, w = T.shape[1], width
+    st = _State(shared, np.repeat(T, w, axis=1), _default_sparse(shared, structures))
+    alive = np.zeros((n, w), dtype=bool)
+    alive[:, 0] = True
+    lineage = [[] for _ in range(n * w)] if n == 1 else None
+
+    values = [approx_chi_array(st.normsq[::w], st.tr[::w], st.tr2[::w])]
+    lineages = [[]]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        while True:
+            V, parts, dims, offset = _candidate_values(st, structures)
+            V[~alive.ravel()] = -np.inf
+            K = V.shape[1]
+            Vd = V.reshape(n, w * K)  # a draw's candidates, in (beam rank, loop) order
+            has = np.isfinite(Vd).any(axis=1)
+            if not has.any():
+                break
+            if not has.all():
+                raise ValueError("Search paths have different lengths across draws.")
+
+            order = np.argsort(-Vd, axis=1, kind="stable")  # ties keep loop order
+            values.append(Vd[np.arange(n), order[:, 0]])
+            pick, new_alive = _select_distinct(st, Vd, order, w, K, dims, offset)
+            parent = (np.arange(n)[:, None] * w + pick // K).ravel()
+            chosen = (pick % K).ravel()
+
+            if lineage is not None:
+                lineage = [lineage[parent[k]] + [_position_merge(st, parent[k], chosen[k], dims, offset)]
+                           for k in range(w)]
+                lineages.append(lineage[0])
+
+            new = _take(st, parent)
+            is_y = chosen >= offset
+            for dim in (0, 1):
+                sel = np.flatnonzero(is_y == bool(dim))
+                if not sel.size:
+                    continue
+                flat = chosen[sel] - dim * offset
+                u, v = flat // dims[dim], flat % dims[dim]
+                src = parent[sel]
+                d_normsq, d_tr, d_tr2 = parts[dim]
+                new.normsq[sel] += d_normsq[src, u, v]
+                new.tr[sel] += d_tr[src, u, v]
+                new.tr2[sel] += d_tr2[src, u, v]
+                _merge(new, dim, sel, u, v)
+            st, alive = new, new_alive
+            for dim in (0, 1):
+                st.compact(dim, compact_threshold)
+    return np.vstack(values), lineages
+
+
+def _decode(f: int, dims, offset):
+    dim = int(f >= offset)
+    u, v = divmod(int(f) - dim * offset, dims[dim])
+    return dim, u, v
+
+
+def _select_distinct(st: _State, Vd: np.ndarray, order: np.ndarray, w: int, K: int, dims, offset):
+    """Per draw, the first ``w`` candidates in ``order`` that reach *distinct* children.
+
+    Returns ``(pick, alive)``, both ``(n, w)``: ``pick`` indexes a draw's row of
+    ``Vd`` (``beam rank * K + candidate``); a draw with fewer than ``w`` distinct
+    finite candidates pads with its best, and ``alive`` marks the real ones.
+
+    Children are compared by ``gid`` -- each label's group, named by the group's
+    smallest label, which is canonical -- after relabelling the absorbed group.
+    Each beam row reaches a given child by at most one merge, so a child occurs at
+    most ``w`` times in a draw's candidates, and the first ``w`` distinct children
+    lie within the first ``w^2``. Duplicates are rarely that dense, so the first
+    ``4 w`` are keyed, and only draws left short are re-keyed out to ``w^2``.
+    """
+    n = Vd.shape[0]
+    if w == 1:
+        return order[:, :1], np.isfinite(Vd[np.arange(n), order[:, 0]])[:, None]
+    cols = order.shape[1]
+    pick, alive = _select_within(st, Vd, order, w, K, dims, offset, min(4 * w, cols))
+    if min(4 * w, cols) < min(w * w, cols):
+        # short draws that still have finite candidates beyond the keyed window
+        short = ~alive.all(axis=1) & np.isfinite(
+            np.take_along_axis(Vd, order[:, min(4 * w, cols):min(4 * w, cols) + 1], axis=1)[:, 0])
+        if short.any():
+            idx = np.flatnonzero(short)
+            p2, a2 = _select_within(_take(st, (idx[:, None] * w + np.arange(w)).ravel()),
+                                    Vd[idx], order[idx], w, K, dims, offset, min(w * w, cols))
+            pick[idx], alive[idx] = p2, a2
+    return pick, alive
+
+
+def _select_within(st: _State, Vd, order, w, K, dims, offset, M):
+    """:func:`_select_distinct` restricted to each draw's first ``M`` candidates."""
+    n = Vd.shape[0]
+    top = order[:, :M]
+    finite = np.isfinite(np.take_along_axis(Vd, top, axis=1))
+    rows = np.arange(n)[:, None] * w + top // K
+    f = top % K
+    keys = [np.arange(n)[:, None, None].repeat(M, axis=1)]  # the draw is part of the key
+    for dim in (0, 1):
+        g = st.gid[dim][rows]  # (n, M, d_dim): the parent's partition
+        on = (f >= offset) == bool(dim)
+        flat = np.where(on, f - dim * offset, 0)
+        u, v = flat // dims[dim], flat % dims[dim]
+        ou = np.take_along_axis(st.lab[dim][rows], u[..., None], axis=2)
+        ov = np.take_along_axis(st.lab[dim][rows], v[..., None], axis=2)
+        keys.append(np.where(on[..., None] & (g == ov), ou, g))
+    keys = np.ascontiguousarray(np.concatenate(keys, axis=2).astype(np.int64))
+    void = keys.reshape(n * M, -1).view(np.dtype((np.void, keys.shape[2] * 8))).ravel()
+    first = np.zeros(n * M, dtype=bool)
+    first[np.unique(void, return_index=True)[1]] = True  # first occurrence, in order
+    first = first.reshape(n, M) & finite
+    rank = np.cumsum(first, axis=1)
+    b, m = np.nonzero(first & (rank <= w))
+    pick = np.full((n, w), -1, dtype=np.int64)
+    pick[b, rank[b, m] - 1] = top[b, m]
+    alive = pick >= 0
+    pick = np.where(alive, pick, pick[:, :1])
+    return pick, alive
+
+
+def _position_merge(st: _State, row: int, f: int, dims, offset) -> Merge:
+    """Candidate ``f`` of row ``row`` as ``(dimension, i, j)`` partition positions."""
+    dim, u, v = _decode(f, dims, offset)
+    rank = np.cumsum(st.active(dim)[row])
+    return (dim + 1, int(rank[u]), int(rank[v]))
+
+
+def evaluate_paths(
+    T: np.ndarray,
+    Sigma: np.ndarray,
+    dx: int,
+    dy: int,
+    merges: List[Merge],
+) -> np.ndarray:
+    """Score one fixed merge path on every column of ``T``: ``(len(merges) + 1, B)``.
+
+    No search happens. The merged ``Sigma`` -- hence ``tr`` and ``tr(Sigma^2)`` -- is
+    the same for every draw, so each level is one pass over ``T``. Values agree with
+    the carried updates of :func:`greedy_search` to rounding, not bit for bit.
+    """
+    T = np.asarray(T, dtype=float)
+    if T.ndim == 1:
+        T = T[:, None]
+    Sigma = np.asarray(Sigma, dtype=float)
+    Sigma = (Sigma + Sigma.T) / 2.0
+    dims = {1: dx, 2: dy}
+
+    def value(T, Sigma):
+        return approx_chi_array(np.sum(T ** 2, axis=0), np.trace(Sigma), np.sum(Sigma ** 2))
+
+    out = [value(T, Sigma)]
+    for dimension, i, j in merges:
+        index1 = merging.get_index(dimension, i, dims[1], dims[2])
+        index2 = merging.get_index(dimension, j, dims[1], dims[2])
+        T = merging.update_T(T, index1, index2)
+        Sigma = merging.update_Sigma(Sigma, index1, index2)
+        dims[dimension] -= 1
+        out.append(value(T, Sigma))
+    return np.vstack(out)
+
+
+def evaluate_path(
+    T_vector: np.ndarray,
+    Sigma: np.ndarray,
+    dx: int,
+    dy: int,
+    merges: List[Merge],
+) -> SearchResult:
+    """:func:`evaluate_paths` for one draw, with the partitions the path visits."""
+    values = evaluate_paths(np.asarray(T_vector, dtype=float), Sigma, dx, dy, merges)[:, 0]
+    return _result(values, merges, dx, dy)
+
+
+def random_merges(
+    dx: int,
+    dy: int,
+    x_structure: Structure,
+    y_structure: Structure,
+    rng: np.random.Generator,
+) -> List[Merge]:
+    """A merge path drawn uniformly at random, without looking at the data.
+
+    At each level one merge is drawn uniformly from the candidate set the greedy
+    search would score (both dimensions pooled), until both dimensions have two
+    groups -- so the path has the same length as the greedy one.
+    """
+    partition = _initial_partition(dx, dy)
+    merges: List[Merge] = []
+    while len(partition["x"]) > 2 or len(partition["y"]) > 2:
+        candidates = [(1, i, j) for (i, j) in x_structure.permitted_merges(partition["x"])] + [
+            (2, i, j) for (i, j) in y_structure.permitted_merges(partition["y"])
+        ]
+        if not candidates:
+            break
+        merge = candidates[rng.integers(len(candidates))]
+        merges.append(merge)
+        partition = _apply(partition, merge)
+    return merges
+
+
+def _initial_partition(dx: int, dy: int) -> dict:
+    return {"x": [[j] for j in range(1, dx + 1)], "y": [[k] for k in range(1, dy + 1)]}
+
+
+def _apply(partition: dict, merge: Merge) -> dict:
+    """The partition after ``merge`` (the input is not modified)."""
+    dimension, i, j = merge
+    out = _copy_partition(partition)
+    groups = out["x" if dimension == 1 else "y"]
+    groups[i - 1] = groups[i - 1] + groups[j - 1]
+    del groups[j - 1]
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -616,6 +966,7 @@ def _greedy_search_loop(
 
         value, dimension, i, j, index1, index2 = best
         result.values.append(value)
+        result.merges.append((dimension, i, j))
 
         # Apply the winning merge to the partition and to (T, Sigma).
         groups = partition[key[dimension]]
