@@ -62,19 +62,31 @@ def one_rep(task) -> list[dict]:
     statistic = ApproxChi()
     boot_T = bootstrap_T(ts.Sigma, args.n_boot, rng)
 
-    rows = []
-    for name, search in searches(args.truncations, args.full).items():
-        t0 = time.perf_counter()
-        T_all = np.column_stack([ts.T_vector, boot_T])
-        paths = search.paths(T_all, ts.Sigma, args.d, args.d, xs, ys, statistic)
+    rows, all_paths, cost = [], {}, {}
+    T_all = np.column_stack([ts.T_vector, boot_T])
+
+    def record(name, paths, seconds):
         p = double_bootstrap_pvalue(paths[:, 0], paths[:, 1:], rng)
         rows.append(dict(
             method=name, strength=strength, rep=rep, p_value=p,
             levels=paths.shape[0],
             # where the observed path peaks: 0 = the search's first level
             argmax_level=int(np.argmax(paths[:, 0])),
-            seconds=time.perf_counter() - t0,
+            seconds=seconds,
         ))
+
+    for name, search in searches(args.truncations, args.full).items():
+        t0 = time.perf_counter()
+        all_paths[name] = search.paths(T_all, ts.Sigma, args.d, args.d, xs, ys, statistic)
+        cost[name] = time.perf_counter() - t0
+        record(name, all_paths[name], cost[name])
+    # Union: one minP over the merge path stacked on a truncated split path.
+    # Still a deterministic map of T, so the calibration stays exact.
+    if "merge" in all_paths:
+        for k in args.truncations:
+            name = f"split@{k}"
+            record(f"merge+{name}", np.vstack([all_paths["merge"], all_paths[name]]),
+                   cost["merge"] + cost[name])
     return rows
 
 
