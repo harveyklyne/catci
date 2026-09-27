@@ -50,11 +50,14 @@ from typing import List, Tuple
 import numpy as np
 
 from . import merging
+from .blocks import SigmaBlocks, t_blocks, t_prefix
 from .statistic import ApproxChi, approx_chi_array
 from .structure import Structure
 
 __all__ = [
+    "MergeSearch",
     "SearchResult",
+    "SplitSearch",
     "greedy_search",
     "greedy_search_paths",
     "beam_search",
@@ -62,6 +65,8 @@ __all__ = [
     "random_merges",
     "evaluate_path",
     "evaluate_paths",
+    "divisive_search",
+    "divisive_search_paths",
 ]
 
 Merge = Tuple[int, int, int]  # (dimension, i, j): 1 = X / 2 = Y, 1-based positions i < j
@@ -979,3 +984,488 @@ def _greedy_search_loop(
         Sigma = merging.update_Sigma(Sigma, index1, index2)
 
     return result
+
+# --------------------------------------------------------------------------- #
+# Divisive search
+# --------------------------------------------------------------------------- #
+Range = Tuple[int, int]
+
+
+def _as_range(group: List[int]) -> Range:
+    """0-based half-open range of a group of 1-based labels; requires contiguity."""
+    lo, hi = min(group), max(group)
+    if hi - lo + 1 != len(group):
+        raise ValueError(
+            f"divisive_search needs groups contiguous in label order, got {sorted(group)}. "
+            "Ordinal and Tree satisfy this; Saturated has no divisive counterpart."
+        )
+    return lo - 1, hi
+
+
+def _labels(ranges: List[Range]) -> List[List[int]]:
+    return [list(range(lo + 1, hi + 1)) for (lo, hi) in ranges]
+
+
+def _boxes(x_ranges: List[Range], y_ranges: List[Range]) -> np.ndarray:
+    """``(ylo, yhi, xlo, xhi)`` for every (X-group, Y-group) cell, X fastest."""
+    xr = np.asarray(x_ranges, dtype=np.intp).reshape(-1, 2)
+    yr = np.asarray(y_ranges, dtype=np.intp).reshape(-1, 2)
+    out = np.empty((len(yr), len(xr), 4), dtype=np.intp)
+    out[:, :, 0:2] = yr[:, None, :]
+    out[:, :, 2:4] = xr[None, :, :]
+    return out.reshape(-1, 4)
+
+
+def _splits_of(structure: Structure, r: Range, memo: dict) -> List[Tuple[Range, Range]]:
+    """The permitted splits of a single group, in range form, memoised.
+
+    A group's splits depend only on that group (both Ordinal and Tree honour
+    this -- see ``permitted_splits``), so the answer for a given range is fixed
+    for the whole search and worth caching: without this, Tree re-walks the tree
+    from the root for every group at every level.
+    """
+    if r not in memo:
+        group = [list(range(r[0] + 1, r[1] + 1))]
+        memo[r] = [(_as_range(a), _as_range(b)) for (_, a, b) in structure.permitted_splits(group)]
+    return memo[r]
+
+
+def _divisive_search_loop(
+    T_vector: np.ndarray,
+    Sigma: np.ndarray,
+    dx: int,
+    dy: int,
+    x_structure: Structure,
+    y_structure: Structure,
+    statistic=None,
+    max_levels: int | None = None,
+    sigma_blocks: SigmaBlocks | None = None,
+) -> SearchResult:
+    """The original per-draw divisive search: one ``statistic.split`` per candidate.
+
+    Kept as the reference :func:`divisive_search_paths` is tested against, and as
+    the fallback for a statistic other than :class:`~catci.statistic.ApproxChi`.
+
+    ``max_levels`` caps the number of splits taken, so the path returned has at
+    most ``max_levels + 1`` entries; ``None`` refines all the way to the
+    singleton partition and returns the ``dx + dy - 3`` levels
+    :func:`greedy_search` does.
+
+    ``sigma_blocks`` lets a caller build :class:`~catci.blocks.SigmaBlocks` once
+    and reuse it across bootstrap draws, which all share ``Sigma``.
+    """
+    if statistic is None:
+        statistic = ApproxChi()
+    if sigma_blocks is None:
+        sigma_blocks = SigmaBlocks(Sigma, dx, dy)
+    T_prefix = t_prefix(T_vector, dx, dy)
+
+    result = SearchResult()
+
+    # Level 0. Merging bottoms out at one partition, but splitting has to pick a
+    # starting one, so score every pair the two structures permit. A tree offers
+    # one; two ordinal variables offer (dx - 1)(dy - 1).
+    best_start = None  # (value, state, x_ranges, y_ranges)
+    for px in x_structure.coarsest_partitions(dx):
+        xr = [_as_range(g) for g in px]
+        for py in y_structure.coarsest_partitions(dy):
+            yr = [_as_range(g) for g in py]
+            boxes = _boxes(xr, yr)
+            state = statistic.init(t_blocks(T_prefix, boxes), sigma_blocks.blocks(boxes, boxes))
+            value = statistic.value(state)
+            # strict '>' keeps the first candidate in loop order on ties, as in greedy_search.
+            if best_start is None or value > best_start[0]:
+                best_start = (value, state, xr, yr)
+
+    value, state, x_ranges, y_ranges = best_start
+    result.values.append(value)
+    result.partitions.append({"x": _labels(x_ranges), "y": _labels(y_ranges)})
+
+    memo: dict = {}
+    level = 0
+    while max_levels is None or level < max_levels:
+        best = None  # (value, state, dimension, position, range_a, range_b)
+        for dimension in (1, 2):
+            structure = x_structure if dimension == 1 else y_structure
+            ranges = x_ranges if dimension == 1 else y_ranges
+            for i, r in enumerate(ranges):
+                for (ra, rb) in _splits_of(structure, r, memo):
+                    refined = ranges[:i] + [ra, rb] + ranges[i + 1:]
+                    if dimension == 1:
+                        xr, yr = refined, y_ranges
+                        n_other = len(y_ranges)
+                        # X is the fast axis, so a and b sit one apart within each row.
+                        cols_a = np.arange(n_other) * len(refined) + i
+                        cols_b = cols_a + 1
+                        rows = _boxes([ra, rb], yr).reshape(n_other, 2, 4)
+                        rows = np.ascontiguousarray(rows.transpose(1, 0, 2)).reshape(-1, 4)
+                    else:
+                        xr, yr = x_ranges, refined
+                        n_other = len(x_ranges)
+                        cols_a = np.arange(n_other) + i * n_other
+                        cols_b = cols_a + n_other
+                        rows = _boxes(xr, [ra, rb])
+
+                    # Only the two new rows of the finer (T, Sigma), never the whole thing.
+                    S = sigma_blocks.blocks(rows, _boxes(xr, yr))
+                    T_ab = t_blocks(T_prefix, rows)
+                    refined_state = statistic.split(
+                        state,
+                        T_ab[:n_other], T_ab[n_other:],
+                        S[:n_other], S[n_other:],
+                        cols_a, cols_b,
+                    )
+                    refined_value = statistic.value(refined_state)
+                    if best is None or refined_value > best[0]:
+                        best = (refined_value, refined_state, dimension, i, ra, rb)
+
+        if best is None:
+            break  # both dimensions are fully refined
+
+        value, state, dimension, i, ra, rb = best
+        if dimension == 1:
+            x_ranges = x_ranges[:i] + [ra, rb] + x_ranges[i + 1:]
+        else:
+            y_ranges = y_ranges[:i] + [ra, rb] + y_ranges[i + 1:]
+        result.values.append(value)
+        result.partitions.append({"x": _labels(x_ranges), "y": _labels(y_ranges)})
+        level += 1
+
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Divisive search, vectorised
+# --------------------------------------------------------------------------- #
+#
+# The vectorised divisive search rests on one observation: of the three numbers
+# ApproxChi tracks, only ``||T||^2`` depends on the draw. ``tr`` and ``tr2`` are
+# functions of the partition alone, and every draw shares ``Sigma``. So each
+# partition the search reaches is expanded *once* -- all its candidate splits
+# scored for ``(tr, tr2)`` in a handful of batched block-sum calls -- and every
+# draw standing at that partition reuses the result. At coarse levels a
+# thousand draws sit at a handful of partitions, so that is where truncated
+# search spends almost nothing. The per-draw part is the ``||T||^2`` update,
+# ``normsq - 2 sum(Ta * Tb)`` over the two new rows (the inverse of formula
+# (24)), which is one gather from a batched ``T`` prefix for all draws at a
+# partition at once.
+#
+# A split of group ``i`` into ``a, b`` along one axis adds rows ``a_k, b_k`` (one
+# per group ``k`` of the other axis) and drops row ``i``. With ``S`` the
+# block-summed ``Sigma`` of the *refined* partition, the inverse of (25)-(27) is
+#
+#     tr'  = tr  - 2 sum_k S(a_k, b_k)
+#     tr2' = tr2 - 4 cross - 2 block
+#     cross = sum_k sum_c S(a_k, c) S(b_k, c)        c over refined cells
+#     block = sum_{k,l} S(a_k, a_l) S(b_k, b_l) + S(a_k, b_l) S(b_k, a_l)
+#
+# ``cross`` splits into the kept cells (the current partition's cells minus
+# those of group ``i``: one ``blocks`` call against the current cells for every
+# candidate at once, then a mask) and the new cells (the candidate's own
+# ``2g x 2g`` block, which ``block`` needs anyway).
+
+
+def _pair_blocks(C: np.ndarray, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
+    """Block sums of ``Sigma`` for every (row box, column box) pair, batched.
+
+    ``C`` is :attr:`SigmaBlocks.cumulative`; ``rows`` is ``(..., R, 4)`` and ``cols``
+    ``(..., K, 4)`` with matching leading axes. Returns ``(..., R, K)``.
+    """
+    r = rows[..., :, None, :]
+    c = cols[..., None, :, :]
+    corners = ((1.0, 1, 3), (-1.0, 0, 3), (-1.0, 1, 2), (1.0, 0, 2))
+    total = 0.0
+    for sr, ry, rx in corners:
+        for sc, cy, cx in corners:
+            total = total + (sr * sc) * C[r[..., ry], r[..., rx], c[..., cy], c[..., cx]]
+    return total
+
+
+def _t_box_sums(P: np.ndarray, boxes: np.ndarray) -> np.ndarray:
+    """``T`` block sums for every draw and box: ``P`` is ``(n, dy+1, dx+1)``, returns ``(n, R)``."""
+    ylo, yhi, xlo, xhi = boxes.T
+    return P[:, yhi, xhi] - P[:, ylo, xhi] - P[:, yhi, xlo] + P[:, ylo, xlo]
+
+
+def _t_prefixes(T: np.ndarray, dx: int, dy: int) -> np.ndarray:
+    """:func:`~catci.blocks.t_prefix` for every column of ``T``; ``(n, dy+1, dx+1)``."""
+    n = T.shape[1]
+    A = T.T.reshape(n, dy, dx).cumsum(axis=1).cumsum(axis=2)
+    return np.pad(A, [(0, 0), (1, 0), (1, 0)])
+
+
+class _Node:
+    """A partition the search has reached, and (once expanded) its scored splits."""
+
+    __slots__ = ("x", "y", "tr", "tr2", "cand_tr", "cand_tr2", "ta", "tb", "seg",
+                 "child_keys", "children")
+
+    def __init__(self, x, y, tr, tr2):
+        self.x, self.y = x, y  # tuples of 0-based half-open ranges
+        self.tr, self.tr2 = tr, tr2
+        self.cand_tr = None
+
+
+class _DivisiveTable:
+    """Every partition reached by any draw, keyed by its ranges, for one ``Sigma``."""
+
+    def __init__(self, Sigma, dx, dy, x_structure, y_structure, sigma_blocks=None):
+        self.dx, self.dy = dx, dy
+        self.structures = (x_structure, y_structure)
+        self.blocks = sigma_blocks if sigma_blocks is not None else SigmaBlocks(Sigma, dx, dy)
+        self.memo = ({}, {})  # per-axis _splits_of memo
+        self.nodes: List[_Node] = []
+        self.ids: dict = {}
+
+    def node_id(self, x, y, tr, tr2) -> int:
+        key = (x, y)
+        if key not in self.ids:
+            self.ids[key] = len(self.nodes)
+            self.nodes.append(_Node(x, y, tr, tr2))
+        return self.ids[key]
+
+    def start(self, P: np.ndarray):
+        """Level 0: score every starting pair, pick per draw. Returns ``(ids, normsq, values)``.
+
+        A tree offers one start; two ordinal variables offer ``(dx-1)(dy-1)``, all
+        scored in one batched call rather than one Python iteration each.
+        """
+        xs, ys = self.structures
+        starts = [
+            (tuple(_as_range(g) for g in px), tuple(_as_range(g) for g in py))
+            for px in xs.coarsest_partitions(self.dx)
+            for py in ys.coarsest_partitions(self.dy)
+        ]
+        boxes = np.stack([_boxes(list(xr), list(yr)) for xr, yr in starts])  # (s, 4, 4)
+        S = _pair_blocks(self.blocks.cumulative, boxes, boxes)  # (s, 4, 4)
+        tr = np.einsum("sii->s", S)
+        tr2 = np.einsum("sij,sij->s", S, S)
+        normsq = (_t_box_sums(P, boxes.reshape(-1, 4)) ** 2).reshape(P.shape[0], -1, 4).sum(axis=2)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            vals = approx_chi_array(normsq, tr, tr2)
+        vals[np.isnan(vals)] = -np.inf
+        best = np.argmax(vals, axis=1)  # first max, as the loop's strict '>'
+        r = np.arange(P.shape[0])
+        ids = np.array([self.node_id(*starts[s], tr[s], tr2[s]) for s in range(len(starts))])
+        return ids[best], normsq[r, best], vals[r, best]
+
+    def expand(self, nid: int) -> _Node:
+        """Score every permitted split of partition ``nid`` for ``(tr, tr2)``; memoised."""
+        node = self.nodes[nid]
+        if node.cand_tr is not None:
+            return node
+        C = self.blocks.cumulative
+        cur = _boxes(list(node.x), list(node.y))  # current cells, X fastest
+        gx, gy = len(node.x), len(node.y)
+        cand_tr, cand_tr2, ta, tb, keys, lengths = [], [], [], [], [], []
+        for dim in (0, 1):
+            ranges = node.x if dim == 0 else node.y
+            other = node.y if dim == 0 else node.x
+            cands = [(i, ra, rb) for i, r in enumerate(ranges)
+                     for (ra, rb) in _splits_of(self.structures[dim], r, self.memo[dim])]
+            if not cands:
+                continue
+            k, g = len(cands), len(other)
+            if dim == 0:
+                new = np.stack([np.stack([_boxes([ra], list(other)), _boxes([rb], list(other))])
+                                for _, ra, rb in cands])
+            else:
+                new = np.stack([np.stack([_boxes(list(other), [ra]), _boxes(list(other), [rb])])
+                                for _, ra, rb in cands])
+            # new: (k, 2, g, 4) -- rows a_k then rows b_k of each candidate
+            W = self.blocks.blocks(new.reshape(-1, 4), cur).reshape(k, 2, g, gx * gy)
+            pos = np.array([i for i, _, _ in cands])
+            cell = np.arange(gx * gy)
+            owner = cell % gx if dim == 0 else cell // gx  # the group each current cell is in
+            keep = owner[None, :] != pos[:, None]  # (k, G): not a cell of the split group
+            cross = np.einsum("kgc,kgc,kc->k", W[:, 0], W[:, 1], keep)
+            own = new.reshape(k, 2 * g, 4)
+            Q = _pair_blocks(C, own, own)  # (k, 2g, 2g)
+            Qaa, Qab, Qba, Qbb = Q[:, :g, :g], Q[:, :g, g:], Q[:, g:, :g], Q[:, g:, g:]
+            cross = cross + np.einsum("kij,kij->k", Qaa, Qba) + np.einsum("kij,kij->k", Qab, Qbb)
+            block = np.einsum("kij,kij->k", Qaa, Qbb) + np.einsum("kij,kij->k", Qab, Qba)
+            cand_tr.append(node.tr - 2.0 * np.einsum("kii->k", Qab))
+            cand_tr2.append(node.tr2 - 4.0 * cross - 2.0 * block)
+            ta.append(new[:, 0].reshape(-1, 4))
+            tb.append(new[:, 1].reshape(-1, 4))
+            for i, ra, rb in cands:
+                refined = ranges[:i] + (ra, rb) + ranges[i + 1:]
+                keys.append((refined, node.y) if dim == 0 else (node.x, refined))
+            lengths.extend([g] * k)  # each candidate owns g rows of ta / tb
+        if not keys:
+            node.cand_tr = np.empty(0)
+            return node
+        node.cand_tr = np.concatenate(cand_tr)
+        node.cand_tr2 = np.concatenate(cand_tr2)
+        node.ta = np.concatenate(ta)
+        node.tb = np.concatenate(tb)
+        # Segment starts for reduceat: an X split owns gy rows, a Y split gx.
+        node.seg = np.concatenate([[0], np.cumsum(lengths)[:-1]]).astype(np.intp)
+        node.child_keys = keys
+        node.children = np.full(len(keys), -1, dtype=np.int64)
+        return node
+
+    def child(self, node: _Node, j: int) -> int:
+        if node.children[j] < 0:
+            x, y = node.child_keys[j]
+            node.children[j] = self.node_id(x, y, float(node.cand_tr[j]), float(node.cand_tr2[j]))
+        return int(node.children[j])
+
+    def release(self, nid: int) -> None:
+        """Drop a node's candidate arrays; levels only refine, so it is never revisited."""
+        node = self.nodes[nid]
+        node.ta = node.tb = node.seg = node.child_keys = node.children = None
+        node.cand_tr2 = None
+        node.cand_tr = np.empty(0) if node.cand_tr is not None else None
+
+
+def divisive_search_paths(
+    T: np.ndarray,
+    Sigma: np.ndarray,
+    dx: int,
+    dy: int,
+    x_structure: Structure,
+    y_structure: Structure,
+    *,
+    max_levels: int | None = None,
+    sigma_blocks: SigmaBlocks | None = None,
+    return_ids: bool = False,
+):
+    """Statistic paths of the divisive search for every column of ``T``.
+
+    The counterpart of :func:`greedy_search_paths`: column ``b`` of the returned
+    ``(L + 1, B)`` array equals ``divisive_search(T[:, b], ...).values``, with
+    ``L = max_levels`` or, untruncated, ``dx + dy - 4``. With ``return_ids`` also
+    returns the table and the ``(L + 1, B)`` node ids visited (for partitions).
+    """
+    T = np.asarray(T, dtype=float)
+    if T.ndim == 1:
+        T = T[:, None]
+    p, n = T.shape
+    if p != dx * dy:
+        raise ValueError("T must have dx*dy rows.")
+    table = _DivisiveTable(Sigma, dx, dy, x_structure, y_structure, sigma_blocks)
+    P = _t_prefixes(T, dx, dy)
+
+    ids, normsq, v0 = table.start(P)
+    values, visited = [v0], [ids]
+    level = 0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        while max_levels is None or level < max_levels:
+            uniq, inv = np.unique(ids, return_inverse=True)
+            order = np.argsort(inv, kind="stable")
+            bounds = np.concatenate([[0], np.cumsum(np.bincount(inv, minlength=len(uniq)))])
+            new_ids = np.empty_like(ids)
+            new_vals = np.empty(n)
+            finished = 0
+            for u, nid in enumerate(uniq):
+                sel = order[bounds[u]:bounds[u + 1]]
+                node = table.expand(int(nid))
+                if node.cand_tr.size == 0:
+                    finished += sel.size
+                    continue
+                Pg = P[sel]
+                dots = np.add.reduceat(_t_box_sums(Pg, node.ta) * _t_box_sums(Pg, node.tb),
+                                       node.seg, axis=1)  # (m, candidates)
+                cand = normsq[sel, None] - 2.0 * dots
+                vals = approx_chi_array(cand, node.cand_tr, node.cand_tr2)
+                vals[np.isnan(vals)] = -np.inf
+                best = np.argmax(vals, axis=1)
+                r = np.arange(sel.size)
+                new_vals[sel] = vals[r, best]
+                normsq[sel] = cand[r, best]
+                for j in np.unique(best):
+                    new_ids[sel[best == j]] = table.child(node, int(j))
+            if finished:
+                if finished != n:
+                    raise ValueError("Search paths have different lengths across draws.")
+                break
+            for nid in uniq:
+                table.release(int(nid))
+            ids = new_ids
+            values.append(new_vals)
+            visited.append(ids)
+            level += 1
+    values = np.vstack(values)
+    if return_ids:
+        return values, table, np.vstack(visited)
+    return values
+
+
+def divisive_search(
+    T_vector: np.ndarray,
+    Sigma: np.ndarray,
+    dx: int,
+    dy: int,
+    x_structure: Structure,
+    y_structure: Structure,
+    statistic=None,
+    max_levels: int | None = None,
+    sigma_blocks: SigmaBlocks | None = None,
+) -> SearchResult:
+    """Run the greedy search top-down, from two groups per dimension outwards.
+
+    ``max_levels`` caps the number of splits taken, so the path returned has at
+    most ``max_levels + 1`` entries; ``None`` refines all the way to the
+    singleton partition and returns the ``dx + dy - 3`` levels
+    :func:`greedy_search` does. Single-draw wrapper of
+    :func:`divisive_search_paths` that also records the partitions.
+    """
+    if statistic is not None and not isinstance(statistic, ApproxChi):
+        return _divisive_search_loop(T_vector, Sigma, dx, dy, x_structure, y_structure,
+                                     statistic, max_levels, sigma_blocks)
+    values, table, visited = divisive_search_paths(
+        T_vector, Sigma, dx, dy, x_structure, y_structure,
+        max_levels=max_levels, sigma_blocks=sigma_blocks, return_ids=True,
+    )
+    result = SearchResult(values=[float(v) for v in values[:, 0]])
+    for nid in visited[:, 0]:
+        node = table.nodes[int(nid)]
+        result.partitions.append({"x": _labels(list(node.x)), "y": _labels(list(node.y))})
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Choosing a direction: what `calibrate` and `api` are handed
+# --------------------------------------------------------------------------- #
+
+
+class MergeSearch:
+    """Agglomerative direction: :func:`greedy_search`. The paper's Algorithm 1."""
+
+    def result(self, T_vector, Sigma, dx, dy, x_structure, y_structure, statistic=None):
+        """The observed search, with the partitions it visited."""
+        return greedy_search(T_vector, Sigma, dx, dy, x_structure, y_structure, statistic)
+
+    def paths(self, T, Sigma, dx, dy, x_structure, y_structure, statistic=None, n_jobs=1):
+        """``(L + 1, B)`` statistic paths for every column of ``T``, one batch."""
+        if statistic is None or isinstance(statistic, ApproxChi):
+            return greedy_search_paths(T, Sigma, dx, dy, x_structure, y_structure, n_jobs=n_jobs)
+        return np.column_stack([
+            _greedy_search_loop(T[:, b], Sigma, dx, dy, x_structure, y_structure, statistic).values
+            for b in range(T.shape[1])
+        ])
+
+
+class SplitSearch:
+    """Divisive direction: :func:`divisive_search`, optionally truncated at ``max_levels``."""
+
+    def __init__(self, max_levels: int | None = None):
+        self.max_levels = max_levels
+
+    def result(self, T_vector, Sigma, dx, dy, x_structure, y_structure, statistic=None):
+        return divisive_search(T_vector, Sigma, dx, dy, x_structure, y_structure,
+                               statistic, max_levels=self.max_levels)
+
+    def paths(self, T, Sigma, dx, dy, x_structure, y_structure, statistic=None, n_jobs=1):
+        """``n_jobs`` is accepted for symmetry with :class:`MergeSearch` and ignored:
+        the draws share one memo of partitions, which is where the speed comes from."""
+        if statistic is None or isinstance(statistic, ApproxChi):
+            return divisive_search_paths(T, Sigma, dx, dy, x_structure, y_structure,
+                                         max_levels=self.max_levels)
+        blocks = SigmaBlocks(Sigma, dx, dy)
+        return np.column_stack([
+            _divisive_search_loop(T[:, b], Sigma, dx, dy, x_structure, y_structure, statistic,
+                                  self.max_levels, blocks).values
+            for b in range(T.shape[1])
+        ])

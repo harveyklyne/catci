@@ -32,12 +32,10 @@ calibration exchangeable paths directly and asserts uniformity level by level.
 
 from __future__ import annotations
 
-from typing import Callable
-
 import numpy as np
 
 from .bootstrap import bootstrap_T
-from .search import _greedy_search_loop, greedy_search_paths
+from .search import MergeSearch
 from .statistic import ApproxChi
 
 __all__ = ["double_bootstrap_pvalue", "bonferroni_pvalue", "adaptive_pvalue"]
@@ -132,21 +130,22 @@ def adaptive_pvalue(
     statistic=None,
     rng: np.random.Generator | None = None,
     n_jobs: int = 1,
-    search: Callable[[np.ndarray], np.ndarray] | None = None,
+    search=None,
 ) -> float:
-    """Run the greedy search on the observed and bootstrap ``T`` and calibrate.
+    """Run the label search on the observed and bootstrap ``T`` and calibrate.
 
     The bootstrap draws ``T ~ N(0, Sigma)`` share the observed ``Sigma``; each is
     put through the same greedy search, and the observed statistic path is compared
     against the bootstrap paths by :func:`double_bootstrap_pvalue`. All ``n_boot + 1``
-    searches run as one batch (:func:`~catci.search.greedy_search_paths`);
-    ``n_jobs`` threads split it.
+    searches run as one batch; ``n_jobs`` threads split it (merge direction only).
 
-    ``search``, if given, replaces the greedy search: it maps the ``(dx*dy, B)``
-    array of draws (observed first) to their ``(L, B)`` statistic paths, e.g. a
-    :func:`~catci.search.beam_search_paths` or :func:`~catci.search.evaluate_paths`
-    partial. Any such map is valid provided every draw goes through the same one --
-    or, if randomised, randomised independently of ``T`` (see :mod:`catci.search`).
+    ``search`` picks the search. A direction -- :class:`~catci.search.MergeSearch`
+    (the default, the paper's Algorithm 1) or :class:`~catci.search.SplitSearch` --
+    or any callable mapping the ``(dx*dy, B)`` array of draws (observed first) to
+    their ``(L, B)`` statistic paths, e.g. a :func:`~catci.search.beam_search_paths`
+    or :func:`~catci.search.evaluate_paths` partial. Any such map is valid provided
+    every draw goes through the same one -- or, if randomised, randomised
+    independently of ``T`` (see :mod:`catci.search`).
     """
     if statistic is None:
         statistic = ApproxChi()
@@ -155,14 +154,10 @@ def adaptive_pvalue(
 
     boot_T = bootstrap_T(Sigma, n_boot, rng)  # (dx*dy, n_boot)
     T_all = np.column_stack([np.asarray(T_vector, dtype=float), boot_T])
-    if search is not None:
-        paths = np.asarray(search(T_all))
-    elif isinstance(statistic, ApproxChi):
-        paths = greedy_search_paths(T_all, Sigma, dx, dy, x_structure, y_structure, n_jobs=n_jobs)
+    if search is None:
+        search = MergeSearch()
+    if hasattr(search, "paths"):
+        paths = search.paths(T_all, Sigma, dx, dy, x_structure, y_structure, statistic, n_jobs=n_jobs)
     else:
-        paths = np.column_stack([
-            _greedy_search_loop(T_all[:, b], Sigma, dx, dy, x_structure, y_structure,
-                                statistic).values
-            for b in range(T_all.shape[1])
-        ])
+        paths = np.asarray(search(T_all))
     return double_bootstrap_pvalue(paths[:, 0], paths[:, 1:], rng)

@@ -15,7 +15,7 @@ from .calibrate import adaptive_pvalue
 from .statistic import ApproxChi, ExactChi
 from .gcm import form_t_sigma
 from .learners import Learner, fit_propensities
-from .search import greedy_search
+from .search import MergeSearch
 from .structure import Structure
 
 __all__ = ["CatciResult", "catci_test"]
@@ -44,6 +44,7 @@ def catci_test(
     rng: Optional[np.random.Generator] = None,
     statistic: str = "approx",
     n_jobs: int = 1,
+    search=None,
 ) -> CatciResult:
     """Test conditional independence ``X _||_ Y | Z`` for categorical ``X, Y``.
 
@@ -57,6 +58,11 @@ def catci_test(
     CDF of the same ``||T||^2``. They select the same partitions and give the
     same p-values in practice, and ``"exact"`` is ~30x slower -- it is there to
     show that, not for routine use.
+
+    ``search`` picks the direction the label search runs in:
+    :class:`~catci.search.MergeSearch` (the default) merges up from singletons,
+    :class:`~catci.search.SplitSearch` splits down from two groups per dimension
+    and can be truncated with ``max_levels``.
     """
     x = np.asarray(x)
     y = np.asarray(y)
@@ -76,9 +82,11 @@ def catci_test(
         raise ValueError(f"statistic must be one of {sorted(STATISTICS)}.")
     stat = STATISTICS[statistic]()
 
-    observed = greedy_search(ts.T_vector, ts.Sigma, dx, dy, x_structure, y_structure, stat)
+    if search is None:
+        search = MergeSearch()
+    observed = search.result(ts.T_vector, ts.Sigma, dx, dy, x_structure, y_structure, stat)
     p = adaptive_pvalue(
         ts.T_vector, ts.Sigma, dx, dy, x_structure, y_structure,
-        n_boot=n_boot, statistic=stat, rng=rng, n_jobs=n_jobs,
+        n_boot=n_boot, statistic=stat, rng=rng, n_jobs=n_jobs, search=search,
     )
     return CatciResult(p_value=p, statistics=np.asarray(observed.values), partitions=observed.partitions)

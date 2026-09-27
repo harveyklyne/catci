@@ -52,7 +52,9 @@ src/catci/
   merging.py     rank-one update formulae (24)-(27)                [pure]
   statistic.py   ApproxChi init/update/value + depth-0 comparators
   search.py      greedy_search: the adaptive label-merging path; also beam
-                 search, random merge paths and fixed-path scoring (comparators)
+                 search, random merge paths and fixed-path scoring (comparators),
+                 and the divisive (split-down) search
+  blocks.py      block sums of T and Sigma for the divisive search
   bootstrap.py   matrix_sqrt + N(0, Sigma) sampling
   calibrate.py   minP calibration of the search path + adaptive_pvalue
   learners.py    Z -> P(label|Z) interface + oracle / xgboost learners
@@ -205,11 +207,18 @@ randomised independently of `T`; `adaptive_pvalue(..., search=...)` accepts it.
 None of them beats greedy (Gaussian-limit study, `d = 8`): a width-25 beam gains
 nothing even on a signal built to mislead greedy; a random path costs 7–25
 points of power unless the structure (a binary tree) fixes where every path
-ends; sample splitting costs 8–35. `catci_test` therefore stays greedy-only.
+ends; sample splitting costs 8–35. `catci_test` therefore keeps greedy merging
+as its default.
 Setup and tables: `SEARCH_COMPARISON.md` (greedy vs random vs split, written for
 the paper) and `SEARCH.md` (all three, including beam). Those numbers are
 exploratory — mixed reps and `n_boot` across cells — and need a uniform rerun
 before they are cited.
+
+The search can also run top-down: `divisive_search_paths` starts from two groups
+per dimension and splits outwards (Ordinal and Tree structures only), optionally
+truncated at `max_levels`. `catci_test(..., search=SplitSearch(k))` and
+`adaptive_pvalue(..., search=...)` take it; `MergeSearch()` is the default.
+Setup and results: `DIVISIVE.md`, `experiments/power_divisive.py`.
 
 ### DGP fixes carried into the port
 

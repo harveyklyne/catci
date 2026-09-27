@@ -1,7 +1,8 @@
 """Test statistics as ``init`` / ``update`` / ``value`` triples.
 
 A statistic carries just enough state to be updated cheaply after a rank-one
-merge. ``ApproxChi`` is the one live statistic (Box's chi-square CDF); the
+merge, or after the split that undoes one (``ApproxChi.split``, used by
+:func:`~catci.search.divisive_search`). ``ApproxChi`` is the one live statistic (Box's chi-square CDF); the
 non-adaptive comparators (``euclid``, ``max``, ``mGCM``) are depth-0 value
 functions -- the same code path at search depth 0, which is what the paper
 claims they are. ``ExactChi`` is the reference ``ApproxChi`` approximates: the
@@ -67,6 +68,28 @@ class ApproxChi:
             normsq=merging.update_normsq(state.normsq, T_vector, index1, index2),
             tr=merging.update_tr(state.tr, Sigma, index1, index2),
             tr2=merging.update_tr2(state.tr2, Sigma, index1, index2),
+        )
+
+    def split(
+        self,
+        state: ChiState,
+        Ta: np.ndarray,
+        Tb: np.ndarray,
+        Sa: np.ndarray,
+        Sb: np.ndarray,
+        cols_a: np.ndarray,
+        cols_b: np.ndarray,
+    ) -> ChiState:
+        """State after *refining* the partition -- the counterpart of :meth:`update`.
+
+        ``update`` merges two groups and reads the current ``(T, Sigma)``; this
+        splits one group in two and reads only the new rows. See
+        :mod:`catci.merging` for what the arguments mean.
+        """
+        return ChiState(
+            normsq=merging.split_normsq(state.normsq, Ta, Tb),
+            tr=merging.split_tr(state.tr, Sa, cols_b),
+            tr2=merging.split_tr2(state.tr2, Sa, Sb, cols_a, cols_b),
         )
 
     def value(self, state: ChiState) -> float:
