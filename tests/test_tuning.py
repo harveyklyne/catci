@@ -7,7 +7,7 @@ xgb = pytest.importorskip("xgboost")
 
 import dgp
 from catci.tuning import _stack, kfold_indices, tune_xgboost
-from config import Config, d_grid, power_config, size_config, tuning_path
+from config import Config, d_grid, power_config, size_config, tuning_path, with_tag
 
 TINY_GRID = dict(eta=[0.3], max_depth=[1, 2], gamma=[0.0])
 
@@ -77,17 +77,28 @@ def test_tune_xgboost_rejects_out_of_range_labels():
 def test_default_configs_keep_their_names_and_tuning():
     cfg = power_config("sin", "lin", "binary_tree")
     assert (cfg.n, cfg.dx, cfg.dy) == (1000, 8, 8)
-    assert cfg.name == "power_sin_lin_binary_tree"
-    assert size_config("lin", "lin").name == "size_lin_lin"
-    # the frozen R tuning is still what the default reads
+    assert cfg.name == "power_sin_lin_binary_tree__mlp"
+    assert size_config("lin", "lin").name == "size_lin_lin__mlp"
+    # the frozen R tuning is still what xgb reads, whatever the default learner
     assert cfg.xgb_params("sin", 8) == {"eta": 0.01, "max.depth": 1, "gamma": 1.5, "nrounds": 861}
+    xgb_cfg = power_config("sin", "lin", "binary_tree", learner="xgb")
+    assert xgb_cfg.name == "power_sin_lin_binary_tree__xgb"
+    assert xgb_cfg.learner_params("sin", 8) == cfg.xgb_params("sin", 8)
+    assert set(cfg.learner_params("sin", 8)) >= {"hidden_layer_sizes", "alpha"}
+    assert power_config("sin", "lin", "binary_tree", learner="oracle").learner_params("sin", 8) == {}
 
 
 def test_d_grid_varies_dx_only():
     cfgs = d_grid("lin", "lin", "step", [8, 32, 128], dy=4, n=2000, reps=10)
     assert [(c.n, c.dx, c.dy, c.reps) for c in cfgs] == [(2000, 8, 4, 10), (2000, 32, 4, 10), (2000, 128, 4, 10)]
     assert len({c.name for c in cfgs}) == 3
-    assert cfgs[1].name == "power_lin_lin_step_n2000_dx32_dy4"
+    assert cfgs[1].name == "power_lin_lin_step_n2000_dx32_dy4__mlp"
+
+
+def test_tag_goes_ahead_of_the_learner():
+    cfg = d_grid("lin", "lin", "step", [32], dy=4, n=2000, learner="oracle")[0]
+    assert with_tag(cfg, "pilot").name == "power_lin_lin_step_n2000_dx32_dy4_pilot__oracle"
+    assert with_tag(cfg, None) is cfg
 
 
 def test_missing_tuning_names_the_command():
@@ -95,3 +106,17 @@ def test_missing_tuning_names_the_command():
     assert not tuning_path(12345, 8, "lin").exists()
     with pytest.raises(FileNotFoundError, match="tune.py --n 12345 --d 8"):
         cfg.xgb_params("lin", 8)
+
+
+def test_write_winner_keeps_the_other_learner(tmp_path):
+    # tune.py's two protocols and two learners share one JSON per (n, d, setting)
+    import json
+
+    import tune
+
+    tune.write_winner(tmp_path, 500, 4, "lin", "mlp", {"alpha": 3.0}, {"protocol": "holdout"})
+    path = tune.write_winner(tmp_path, 500, 4, "lin", "xgb", {"nrounds": 7}, {"protocol": "cv"})
+    assert path == tuning_path(500, 4, "lin", root=tmp_path)
+    blob = json.loads(path.read_text())
+    assert blob["mlp"] == {"alpha": 3.0} and blob["xgb"] == {"nrounds": 7}
+    assert blob["xgb_tuning"]["protocol"] == "cv"

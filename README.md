@@ -18,28 +18,42 @@ pip install -e ".[test,experiments]"
 pytest
 ```
 
-Extras: `test` (pytest, hypothesis), `learners` (xgboost, scikit-learn),
-`experiments` (learners + pandas, pyarrow).
+The core install includes scikit-learn, for the default MLP propensity learner.
+Extras: `test` (pytest, hypothesis), `learners` (xgboost, for the boosted
+alternative), `experiments` (xgboost + pandas, pyarrow).
 
 ## Usage
 
 ```python
 from catci import catci_test
 from catci.structure import Ordinal, Tree
-from catci.learners import xgboost_learner
 
 res = catci_test(
     x, y,                                  # 1-based integer label vectors
     x_structure=Tree.binary(dx),           # or Ordinal(), Cyclic(), Saturated(), Tree.from_parents(...)
     y_structure=Tree.binary(dy),
     z=z,                                   # conditioning variables
-    learner=xgboost_learner({"eta": 0.01, "max.depth": 1, "gamma": 2, "nrounds": 163}),
     n_boot=1000,                           # see 'Calibration' below
 )
 res.p_value, res.statistics, res.partitions
 ```
 
-Pass `f=`/`g=` instead of `learner=`/`z=` to supply propensities `P(X|Z)`,
+The propensities `P(X|Z)`, `P(Y|Z)` are fitted by a small neural network,
+`mlp_learner()`, at hyperparameters tuned for `n = 1000, d = 8`
+(`learners.DEFAULT_MLP_PARAMS`). Pass `learner=` to override them or to swap
+in gradient boosting, without touching anything else:
+
+```python
+from catci.learners import mlp_learner, xgboost_learner
+
+learner = mlp_learner({"hidden_layer_sizes": [32], "alpha": 10.0})
+learner = xgboost_learner({"eta": 0.01, "max.depth": 1, "gamma": 2, "nrounds": 163})
+```
+
+The two give the same size and power at `d = 8` (paired sweep, `report_learners.py`);
+the experiments run both.
+
+Pass `f=`/`g=` instead of `z=` to supply propensities `P(X|Z)`,
 `P(Y|Z)` directly — the oracle path, which separates "does the test calibrate"
 from "did the regression fit well".
 
@@ -54,7 +68,7 @@ src/catci/
   search.py      greedy_search: the adaptive label-merging path
   bootstrap.py   matrix_sqrt + N(0, Sigma) sampling
   calibrate.py   minP calibration of the search path + adaptive_pvalue
-  learners.py    Z -> P(label|Z) interface + oracle / xgboost learners
+  learners.py    Z -> P(label|Z) interface + mlp (default) / xgboost / oracle learners
   tuning.py      K-fold CV tuner for the xgboost learner (sims and real data)
   api.py         catci_test: the public entry point
 
@@ -62,12 +76,16 @@ experiments/
   config.py      config-as-data: one resolved Config per figure
   dgp.py         data-generating processes, parametric in d
   methods.py     method registry: name -> p-value on a fitted dataset
-  run.py         power grids -> parquet + provenance sidecar
-  run_size.py    null-calibration (size) runs
+  run.py         power grids -> parquet + provenance sidecar, one per learner
+  run_size.py    null-calibration (size) runs, one per learner
   run_d_axis.py  power/size as dx grows with n, dy fixed (one run.py block per dx)
-  tune.py        tune the learner for a simulated (n, num_class, setting)
+  tuning/        tuned hyperparameters (mlp + xgb), one JSON per (n, num_class, setting)
+  tune.py        tune either learner for a simulated (n, num_class, setting):
+                 held-out mlogloss (the R protocol) or K-fold CV (xgb)
   tune_check.py  score tunings by KL to the true propensities
-  tuning/        XGBoost hyperparameters, one JSON per (n, num_class, setting)
+  bench_learners.py  propensity quality: E_f, the Assumption 1 remainder
+  report_learners.py print the size/power/propensity comparison tables
+  bench_sweep.sh     drive the whole learner comparison
 
 tests/
   fixtures/      the frozen R oracle (see fixtures/README.md)
@@ -206,10 +224,13 @@ reject at level `alpha` at all unless `B >= L/alpha`.
 CV log-loss. `nrounds` is read off the mean validation curve rather than
 gridded. Several simulated replicates are tuned in one `xgb.cv` call, with
 folds kept inside each replicate, so the training size is `(K-1)/K * n` — at
-`n = 1000, K = 5` that is the R tuner's `n_tr = 800`. `experiments/tune.py`
-draws tuning data from `dgp.simulate_marginal`: the interaction preserves both
-margins, so one tuning per `(n, num_class, setting)` serves every interaction,
-strength and partner dimension.
+`n = 1000, K = 5` that is the R tuner's `n_tr = 800`. `experiments/tune.py
+--learner xgb --protocol cv` draws tuning data from `dgp.simulate_marginal`: the
+interaction preserves both margins, so one tuning per `(n, num_class, setting)`
+serves every interaction, strength and partner dimension. The default
+`--protocol holdout` is the R tuner's own held-out-mlogloss protocol, which is
+also how the MLP was tuned; both write into the same per-setting JSON, one key
+per learner.
 
 At `n = 1000, d = 8`, the cheap `FAST_GRID` (eta 0.1, 9 points) matches the
 frozen R tuning (eta 0.01, 28 points) on mean `KL(f || f_hat)` to the true
@@ -234,14 +255,17 @@ spline, is also worse than uniform at `d >= 64` for every `C`, because its
 intercepts are unpenalised. The tuner correctly reports "stop after ~4
 rounds". A learner that shares strength across neighbouring labels (the `lin`
 pmf is a smooth ramp in the label index) would not have this problem. That is
-the same structure the test exploits, and it is item 2's problem. Until then,
-large-`d` simulation runs use `learner="oracle"`, which isolates the test from
-the regression.
+the same structure the test exploits, and it is item 2's problem. Item 2's MLP
+learner (now the default) shares a hidden layer across classes, but it has only
+been tuned and compared at `d = 8`, where it matches xgboost. Until it is swept
+over `d`, large-`d` simulation runs use `learner="oracle"`, which isolates the
+test from the regression.
 
 **Does the merging advantage widen with `d`? Yes (pilot).** Setup: `lin_lin_step`,
 `n = 2000`, `dy = 4`, oracle propensities, `n_boot = 200`, `alpha = 0.05`, 100
 reps per ordinal cell and 200 per comparator cell. The per-observation signal
-is flat in `d` for `lin`. Reproduce with `run_d_axis.py` and `report_pilot.py`.
+is flat in `d` for `lin`. Reproduce with `run_d_axis.py --learner oracle` and
+`report_pilot.py`.
 
 | strength | method | dx=8 | 16 | 32 | 64 | 128 | 256 |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -301,7 +325,7 @@ paths. See `tests/fixtures/README.md` for the JSON conventions.
   `d` grid needs a cluster or reduced reps at the top end.
 - **No learner for large `d`.** See "Tuning, and what breaks as `d` grows":
   at `n ~ 2000, d >= 64` both xgboost and multinomial logistic regression are
-  worse than uniform.
+  worse than uniform. The MLP has not been tried there yet.
 - **`form_t_sigma` materialises the `n x dx*dy` product matrix.** At
   application scale (`n ~ 7e4, dx*dy ~ 1e3`) that is ~1 GB, doubled by
   `np.cov`. It will need row-chunking before item 4.
