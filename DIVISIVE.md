@@ -96,10 +96,25 @@ Paired difference vs merge at 0.6: split@2 +0.145 +- 0.029, split@4
   for the full search. A natural follow-up: minP over the union of a truncated
   split path and the merge path, to see whether it keeps most of both gains.
 
+### d = 16 (binary_tree, n = 4000, B = 1000, 100 reps)
+
+| strength | merge | split | split@2 | split@4 | split@8 |
+|---|---:|---:|---:|---:|---:|
+| 0.4 | 0.78 | 0.80 | 0.89 | 0.89 | 0.88 |
+| 0.8 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+
+Paired vs merge at 0.4: split@2 / @4 +0.110 +- 0.031, split@8 +0.100 +- 0.030,
+full split +0.020 +- 0.014. Same picture as d = 8. Seconds per test: merge 15.6,
+full split 58.8, split@2 **0.06**, split@4 0.28, split@8 5.6.
+
+Size: the 100-rep run showed 0.09-0.11 for the truncated splits at strength 0,
+so it was re-run at 1000 reps (`..._size.csv`, SE 0.007): split@2 / @4 / @8
+reject **0.051 / 0.048 / 0.052** at 0.05 (and 0.010 / 0.010 / 0.009 at 0.01,
+0.103 / 0.097 / 0.101 at 0.10). Calibrated; the 100-rep excess was noise.
+
 ### Still open
 
-1. d = 16 (and 32) power -- a d = 16, n = 4000 binary_tree run was launched;
-   check `experiments/results_divisive/tree_binary_tree_d16_*.csv`.
+1. d = 32 power; `alt` at d = 16 (expect the same collapse as d = 8).
 2. Ordinal structure power (step interaction) -- not run.
 3. `experiments/bench_search.py`: master's version was kept at the rebase; the
    divisive columns from the old benchmark were not ported.
