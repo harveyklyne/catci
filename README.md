@@ -243,23 +243,29 @@ the regression.
 reps per ordinal cell and 200 per comparator cell. The per-observation signal
 is flat in `d` for `lin`. Reproduce with `run_d_axis.py` and `report_pilot.py`.
 
-| strength | method | dx=8 | 16 | 32 | 64 | 128 |
-|---|---|---:|---:|---:|---:|---:|
-| 0 (size) | ordinal | 0.040 | 0.030 | 0.040 | 0.060 | 0.040 |
-| | euclid | 0.025 | 0.045 | 0.020 | 0.025 | 0.030 |
-| | max | 0.025 | 0.035 | 0.040 | 0.010 | 0.045 |
-| | chi_sq | 0.040 | 0.090 | 0.110 | **0.405** | **0.995** |
-| | mGCM | 0.055 | 0.080 | 0.105 | **0.320** | **0.640** |
-| 0.6 | ordinal | **0.640** | **0.600** | **0.570** | **0.490** | **0.460** |
-| | euclid | 0.450 | 0.305 | 0.230 | 0.135 | 0.065 |
-| | max | 0.215 | 0.100 | 0.070 | 0.070 | 0.035 |
-| 1.2 | ordinal | **1.000** | **1.000** | **1.000** | **0.980** | **0.970** |
-| | euclid | 0.995 | 0.975 | 0.870 | 0.640 | 0.410 |
-| | max | 0.715 | 0.430 | 0.245 | 0.145 | 0.095 |
+| strength | method | dx=8 | 16 | 32 | 64 | 128 | 256 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 0 (size) | ordinal | 0.040 | 0.030 | 0.040 | 0.060 | 0.040 | 0.033 |
+| | euclid | 0.025 | 0.045 | 0.020 | 0.025 | 0.030 | 0.010 |
+| | max | 0.025 | 0.035 | 0.040 | 0.010 | 0.045 | 0.010 |
+| | chi_sq | 0.040 | 0.090 | 0.110 | **0.405** | **0.995** | **1.000** |
+| | mGCM | 0.055 | 0.080 | 0.105 | **0.320** | **0.640** | 0.020\* |
+| 0.6 | ordinal | **0.640** | **0.600** | **0.570** | **0.490** | **0.460** | **0.367** |
+| | euclid | 0.450 | 0.305 | 0.230 | 0.135 | 0.065 | 0.020 |
+| | max | 0.215 | 0.100 | 0.070 | 0.070 | 0.035 | 0.020 |
+| 1.2 | ordinal | **1.000** | **1.000** | **1.000** | **0.980** | **0.970** | **0.633** |
+| | euclid | 0.995 | 0.975 | 0.870 | 0.640 | 0.410 | 0.220 |
+| | max | 0.715 | 0.430 | 0.245 | 0.145 | 0.095 | 0.020 |
 
-Ordinal search stays calibrated and loses little power as `dx` grows 16-fold.
-At strength 0.6, its power over Euclid, the best calibrated unmerged test,
-grows from 1.4x to 7x. The pseudo-inverse `chi_sq` competitor and `mGCM` lose
+The `dx = 256` column has 30 reps per ordinal cell (SE up to ~0.09) and 100
+per comparator cell. Ordinal search stays calibrated across the grid and loses
+little power up to `dx = 128`. At `dx = 256` (`dx*dy = 1024`, about 2
+observations per cell at `n = 2000`) its power at strength 1.2 drops to 0.63.
+That is still ~3x Euclid's there, and ~18x at strength 0.6. Over the grid, at
+strength 0.6, its power over Euclid, the best calibrated unmerged test, grows
+from 1.4x to 18x. \*`mGCM` at `dx = 256` is an artefact: some cells are
+empty, so `diag(Sigma) = 0` and its studentisation divides by zero. The
+pseudo-inverse `chi_sq` competitor and `mGCM` lose
 size control as `dx*dy` approaches `n`, even with oracle propensities (TODO
 0a's `rank(Sigma)/n` effect), so their power at large `dx` is not
 interpretable. `ankan` has no power against this interaction at any `d`.
