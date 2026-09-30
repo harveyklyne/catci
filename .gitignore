@@ -18,6 +18,7 @@ dist/
 # Simulation output (regenerate with experiments/run.py)
 experiments/results/
 experiments/results-r-legacy/
+experiments/results_divisive/
 
 # Editor / OS
 .Rproj.user
@@ -25,3 +26,6 @@ experiments/results-r-legacy/
 
 *.pdf
 /related-literature/
+
+# Paper source (kept outside git)
+/Conditional_independence_testing_with_categorical_data/
