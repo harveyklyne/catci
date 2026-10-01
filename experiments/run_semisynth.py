@@ -183,8 +183,11 @@ def one_rep(task) -> list[dict]:
     args, lam, rep_id, seed = task
     pop, delta, kinds, z_levels, (xs, ys) = _setup(args)
     dx, dy = pop.dx, pop.dy
-    data_rng, boot_seed, method_seed = np.random.default_rng(seed).spawn(3)
-    rep = ss.draw(pop, args.n, lam, data_rng, z_names=tuple(args.z), replace=True, delta=delta)
+    # SeedSequence children, not Generators: default_rng(generator) returns that same
+    # generator, so a per-learner default_rng(...) would continue one stream rather
+    # than replay it, and the learners would not share their draws.
+    data_ss, boot_ss, method_ss = seed.spawn(3)
+    rep = ss.draw(pop, args.n, lam, np.random.default_rng(data_ss), z_names=tuple(args.z), replace=True, delta=delta)
     zcell = np.unique(rep.z, axis=0, return_inverse=True)[1].ravel()
     stat = ApproxChi()
 
@@ -194,9 +197,9 @@ def one_rep(task) -> list[dict]:
             f, g = fitted_propensities(learner, rep, z_levels, dx, dy)
         ts = form_t_sigma(rep.x, rep.y, f, g, normalise=False)
         # Common random numbers: every learner sees the same N(0, I) draws.
-        boot = bootstrap_T(ts.Sigma, args.n_boot, np.random.default_rng(boot_seed))
+        boot = bootstrap_T(ts.Sigma, args.n_boot, np.random.default_rng(boot_ss))
         T_all = np.column_stack([ts.T_vector, boot])
-        rng = np.random.default_rng(method_seed)  # tie-breaks in the calibration
+        rng = np.random.default_rng(method_ss)  # tie-breaks in the calibration
 
         def record(name, p, search_t, cal_t=None, paths=None):
             rows.append(dict(

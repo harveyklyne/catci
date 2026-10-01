@@ -109,11 +109,37 @@ def approx_chi_statistic(normsq: float, tr: float, tr2: float) -> float:
     return float(approx_chi_array(normsq, tr, tr2))
 
 
+# A partition whose coarsened statistic has trace below this is identically zero:
+# e.g. Y split as {level absent from the sample} vs {the rest}, whose residual
+# columns are 0 and minus 0 when the absent level's propensity is exactly 0.
+# Residual-product variances are bounded by 1 and a rare-but-present level still
+# has variance of order 1/n, so 1e-12 only ever catches rounding noise around 0.
+DEGENERATE_TRACE = 1e-12
+
+
 def approx_chi_array(normsq, tr, tr2):
-    """Elementwise :func:`approx_chi_statistic`, for every candidate at once."""
-    g = tr2 / tr
-    h = tr ** 2 / tr2
-    return gammainc(h / 2.0, normsq / g / 2.0)
+    """Elementwise :func:`approx_chi_statistic`, for every candidate at once.
+
+    A degenerate partition (``tr <= DEGENERATE_TRACE``: its statistic is
+    identically zero) scores 0 -- no evidence -- rather than the ``0/0 = nan``
+    that would drop it from the search for some draws and not others. ``normsq``
+    is clamped at 0 against rounding in the carried updates. Non-degenerate values
+    are unchanged bit for bit.
+    """
+    normsq, tr, tr2 = np.broadcast_arrays(np.asarray(normsq, dtype=float),
+                                          np.asarray(tr, dtype=float),
+                                          np.asarray(tr2, dtype=float))
+    degenerate = tr <= DEGENERATE_TRACE
+    if not degenerate.any():
+        g = tr2 / tr
+        h = tr ** 2 / tr2
+        return gammainc(h / 2.0, np.maximum(normsq, 0.0) / g / 2.0)
+    safe_tr = np.where(degenerate, 1.0, tr)
+    safe_tr2 = np.where(degenerate, 1.0, tr2)
+    g = safe_tr2 / safe_tr
+    h = safe_tr ** 2 / safe_tr2
+    out = gammainc(h / 2.0, np.maximum(normsq, 0.0) / g / 2.0)
+    return np.where(degenerate, 0.0, out)
 
 
 # --------------------------------------------------------------------------- #
