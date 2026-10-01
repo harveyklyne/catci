@@ -61,6 +61,47 @@ from catci.statistic import ApproxChi, euclid, max_abs, mgcm
 from catci.structure import Ordinal, Saturated
 
 OUT = Path(__file__).resolve().parent / "results_semisynth"
+
+
+class Timer:
+    """CPU and wall seconds for a block: ``with Timer() as t: ...; t.cpu, t.wall``.
+
+    CPU is ``time.process_time()`` -- this process only, all its threads. Workers
+    run single-threaded BLAS (set ``OMP_NUM_THREADS=1`` etc.), so it is the
+    method's own cost, unaffected by other load on the machine; wall time is
+    kept beside it to show contention.
+    """
+
+    def __enter__(self):
+        self._c, self._w = time.process_time(), time.perf_counter()
+        return self
+
+    def __exit__(self, *exc):
+        self.cpu = time.process_time() - self._c
+        self.wall = time.perf_counter() - self._w
+        return False
+
+
+def machine_info() -> dict:
+    """What a CPU time was measured on, for the provenance sidecar."""
+    import os
+    import platform
+
+    def sysctl(key):
+        try:
+            return subprocess.run(["sysctl", "-n", key], capture_output=True, text=True).stdout.strip()
+        except OSError:
+            return ""
+
+    return dict(
+        platform=platform.platform(), processor=platform.processor(),
+        cpu_brand=sysctl("machdep.cpu.brand_string"), n_cpu=os.cpu_count(),
+        load_avg_at_start=os.getloadavg(), python=platform.python_version(),
+        numpy=np.__version__,
+        blas_threads={k: os.environ.get(k) for k in
+                      ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                       "VECLIB_MAXIMUM_THREADS")},
+    )
 DEPTH0 = {"max": max_abs, "euclid": euclid, "mGCM": mgcm}
 
 
@@ -145,46 +186,57 @@ def one_rep(task) -> list[dict]:
 
     rows = []
     for learner in args.learners:
-        t0 = time.perf_counter()
-        f, g = fitted_propensities(learner, rep, z_levels, dx, dy)
-        fit_s = time.perf_counter() - t0
+        with Timer() as tf:
+            f, g = fitted_propensities(learner, rep, z_levels, dx, dy)
         ts = form_t_sigma(rep.x, rep.y, f, g, normalise=False)
         # Common random numbers: every learner sees the same N(0, I) draws.
         boot = bootstrap_T(ts.Sigma, args.n_boot, np.random.default_rng(boot_seed))
         T_all = np.column_stack([ts.T_vector, boot])
         rng = np.random.default_rng(method_seed)  # tie-breaks in the calibration
 
-        def record(name, p, seconds, paths=None):
+        def record(name, p, search_t, cal_t=None, paths=None):
             rows.append(dict(
                 method=name, learner=learner, lam=lam, rep=rep_id, p_value=float(p),
-                seconds=seconds, fit_seconds=fit_s,
+                # search_* = statistic path for the observed T and all B draws;
+                # cal_* = the minP calibration on those paths; fit_* = propensities.
+                search_cpu=search_t.cpu, search_wall=search_t.wall,
+                cal_cpu=None if cal_t is None else cal_t.cpu,
+                fit_cpu=tf.cpu, fit_wall=tf.wall, n_boot=args.n_boot,
                 note="", levels=None if paths is None else paths.shape[0],
                 argmax_level=None if paths is None else int(np.argmax(paths[:, 0])),
             ))
 
         for name, search in searches(xs, ys, args.truncations, args.full_split).items():
-            t1 = time.perf_counter()
-            paths = search.paths(T_all, ts.Sigma, dx, dy, xs, ys, stat)
-            sec = time.perf_counter() - t1
-            record(name, double_bootstrap_pvalue(paths[:, 0], paths[:, 1:], rng), sec, paths)
+            with Timer() as t_s:
+                paths = search.paths(T_all, ts.Sigma, dx, dy, xs, ys, stat)
+            with Timer() as t_c:
+                p = double_bootstrap_pvalue(paths[:, 0], paths[:, 1:], rng)
+            record(name, p, t_s, t_c, paths)
         for name, fn in DEPTH0.items():
-            t1 = time.perf_counter()
-            path = np.array([[fn(T_all[:, b], ts.Sigma) for b in range(T_all.shape[1])]])
-            record(name, double_bootstrap_pvalue(path[:, 0], path[:, 1:], rng),
-                   time.perf_counter() - t1)
+            with Timer() as t_s:
+                path = np.array([[fn(T_all[:, b], ts.Sigma) for b in range(T_all.shape[1])]])
+            with Timer() as t_c:
+                p = double_bootstrap_pvalue(path[:, 0], path[:, 1:], rng)
+            record(name, p, t_s, t_c)
 
         fitted = methods.Fitted(rep.x, rep.y, rep.z, f, g, dx, dy, ts.T_vector, ts.Sigma)
-        record("chi_sq", methods.chi_sq(fitted), 0.0)
+        with Timer() as t_s:
+            p = methods.chi_sq(fitted)
+        record("chi_sq", p, t_s)
         for name, (kx, ky) in {"at_typed": kinds, "at_cat": ("categorical", "categorical")}.items():
-            rx = at.residual_matrix(rep.x, f, kx)
-            ry = at.residual_matrix(rep.y, g, ky)
-            record(name, ankan_textor_pvalue(rx, ry, kx, ky), 0.0)
+            with Timer() as t_s:
+                rx = at.residual_matrix(rep.x, f, kx)
+                ry = at.residual_matrix(rep.y, g, ky)
+                p = ankan_textor_pvalue(rx, ry, kx, ky)
+            record(name, p, t_s)
             rows[-1]["note"] = _AT_NOTE.pop()
 
     # Learner-free competitor: once per replicate.
-    rows.append(dict(method="strat_chi2", learner="none", lam=lam, rep=rep_id,
-                     p_value=stratified_chi2(rep.x, rep.y, zcell), seconds=0.0,
-                     fit_seconds=0.0, note="", levels=None, argmax_level=None))
+    with Timer() as t_s:
+        p = stratified_chi2(rep.x, rep.y, zcell)
+    rows.append(dict(method="strat_chi2", learner="none", lam=lam, rep=rep_id, p_value=p,
+                     search_cpu=t_s.cpu, search_wall=t_s.wall, cal_cpu=None, fit_cpu=0.0,
+                     fit_wall=0.0, n_boot=None, note="", levels=None, argmax_level=None))
     return rows
 
 
@@ -253,15 +305,17 @@ def main():
     df.to_parquet(OUT / f"{stem}.parquet", index=False)
     commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     (OUT / f"{stem}.provenance.json").write_text(json.dumps(
-        dict(vars(args), git_commit=commit, seconds=time.time() - t0), indent=2))
+        dict(vars(args), git_commit=commit, seconds=time.time() - t0, machine=machine_info()),
+        indent=2, default=str))
 
     print(f"\n### {stem}  ({time.time() - t0:.0f}s)  size SE~{np.sqrt(0.05 * 0.95 / args.reps):.3f}")
     df["reject"] = df.p_value < 0.05
     order = list(dict.fromkeys(df.method))
     print(df.pivot_table(index=["learner", "lam"], columns="method", values="reject", sort=False)
             [order].round(3).to_string())
-    print("\nmean seconds per test (search + calibration):")
-    print(df.groupby("method", sort=False)["seconds"].mean().round(3).to_string())
+    print("\nmean CPU seconds per test (search, calibration, propensity fit):")
+    print(df.groupby(["learner", "method"], sort=False)[["search_cpu", "cal_cpu", "fit_cpu"]]
+            .mean().round(4).to_string())
 
 
 if __name__ == "__main__":
