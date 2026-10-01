@@ -2,9 +2,10 @@
 
 A review of the paper draft
 (`Conditional_independence_testing_with_categorical_data/main.tex`, 1324 lines)
-against master at `19d6d3f` and every worktree/branch, 2026-09-26. The draft has no
-marked TODOs; everything below comes from reading the prose, algorithms and proofs.
-Nothing here has been started.
+against master at `19d6d3f` and every worktree/branch, 2026-09-26. Refreshed
+2026-09-30 against master `a2c23a2`, after TODOs 1, 2, 5 and 7 were merged. The
+draft has no marked TODOs; everything below comes from reading the prose,
+algorithms and proofs. Nothing here has been started.
 
 Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
 (`main.tex:73-74`), so "Lemma 10" is `lem:adaptivePi` (line 1030), "Lemma 5" is
@@ -26,8 +27,8 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
    calibration. The only draft of the minP replacement is `MINP.md`, now tracked
    (it was nearly lost).
 3. **Every figure and size/power claim predates the minP fix (T2).** The only
-   minP-era numbers are scattered across worktrees; there is no size grid on
-   master.
+   minP-era numbers are in the study docs (SEARCH*.md, DIVISIVE.md, README,
+   NOTES-mlp-learner.md); there is no size grid regenerating Fig 2.
 
 ## a) Code TODOs
 
@@ -64,7 +65,10 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
     backed only by mGCM.
 - **C8. Search limits are not implemented.** Line 255 mentions "fixing a maximum
   group size or a total number of merges", and Algorithm 4 takes a "search depth
-  `L`" (626). The code always runs to 2×2.
+  `L`" (626). The merge search always runs to 2×2. Only the divisive search can
+  be truncated (`SplitSearch(max_levels)`). DIVISIVE.md finds truncation's gain is
+  entirely the smaller minP multiplicity penalty, and suggests testing a weighted
+  minP over the ordinary merge path instead.
 - **C9. The abstract's Bonferroni baseline is not the one implemented.** Line 109
   means "testing at every possible granularity" with Bonferroni, i.e. a fixed set
   of granularities such as each tree depth. `*_bonf` (`calibrate.py:101`) applies
@@ -88,10 +92,8 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
     merges.
 - **C13. Chi-square degrees of freedom.** Paper eq. (6), line 262: `χ²_{rank(σ)}`.
   Code `methods.py:140`: fixed `(dx−1)(dy−1)`. They agree only at generic rank.
-- **C14. Oracle-propensity experiments exist only as an API path.** `api.py:39`
-  accepts `f`/`g` and `learners.oracle_learner` exists, but `run.py` always uses
-  xgboost. The PLAN.md Finding 2/4 oracle tables can't be reproduced from master.
-  (tuner-d-axis adds an oracle option.)
+- **C14. Resolved on master.** Oracle propensities are now `run.py --learner
+  oracle`. (Was: oracle experiments existed only as an API path.)
 - **C15. The multiplier bootstrap** (PLAN.md: uncentred `T* = prod_matᵀε/√n`) is
   unimplemented. It would put the observed `T` and the draws in the same row space
   by construction.
@@ -99,7 +101,8 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
   - `pcalg` structure learning on real data (line 101);
   - a formal uniformity test for the size simulation (102);
   - high-dimensional results for specific `q` (103);
-  - a hierarchical-classifier learner (115);
+  - a hierarchical-classifier learner (115). The MLP on master is a plain
+    multinomial classifier, not hierarchical;
   - the Li–Shepherd parametric tests, Liu's latent-variable approach, and
     stratification for discrete `Z` (129-153). Only Ankan & Textor is implemented.
 
@@ -107,16 +110,20 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
 
 | Text | TODO | Status |
 |---|---|---|
-| Sample splitting (line 138) | 7b | Built and run in `alt-search`; loses 0.19-0.47 in power |
-| Random search / sanity check | 4.1, 7a | Built and run in `alt-search`; loses to greedy on step designs by 0.07-0.24, ties on the tree |
-| Wider search | 7c | Beam built and run in `alt-search`; +0.005 to +0.010 on the greedy trap (SE ≈ 0.01), i.e. no gain |
-| Motivating example `d = 30 × 10` (131); "fix d = 8" (405) | 1 | `tuner-d-axis`: tuner and d-axis built; learners worse than uniform at `d ≥ 64`; oracle pilot running |
-| Pre-tuning (615-617) | 1 | Tuner exists only in `tuner-d-axis` |
-| Deep / hierarchical classifier (115) | 2 | `mlp-learner`: size done, power sweep running. Rebased branch **not pushed** (diverged from origin; pushing needs a force-push) |
-| Temporal / taxonomy structures (112) | 3 | Done on master (`Cyclic`, `Tree.from_parents`) |
-| Divisive search | 5 | `divisive-search`: d = 8 answered; d ≥ 16 and ordinal open |
-| Exact CDF criterion | 6 | Done on master (`ExactChi`); paired power study never finished |
-| `n_boot` default of 100 vs 1000 in the configs | 0b / 8 | Open |
+All of these are now on master; the open part is mostly the write-up (T18).
+
+| Text | TODO | Status on master |
+|---|---|---|
+| Sample splitting (line 138) | 7b | `<search>_split` methods; loses 8-35 points against greedy (SEARCH_COMPARISON.md) |
+| Random search / sanity check | 4.1, 7a | `<search>_random` methods; greedy beats random by 7-25 points where the structure leaves the final partition free, 1-2 under a binary tree |
+| Wider search | 7c | `greedy_beam5`; no gain even on the greedy trap (SEARCH.md) |
+| Motivating example `d = 30 × 10` (131); "fix d = 8" (405) | 1 | CV tuner (`tuning.py`, `experiments/tune.py`), separate dx/dy, d-axis pilot up to dx = 256 (README). Learners are worse than uniform at `d ≥ 64`, so large d uses oracle propensities |
+| Pre-tuning (615-617) | 1 | CV tuner on master; see T16 |
+| Deep / hierarchical classifier (115) | 2 | MLP learner merged and now the **default**; every experiment runs both MLP and xgboost (NOTES-mlp-learner.md) |
+| Temporal / taxonomy structures (112) | 3 | `Cyclic`, `Tree.from_parents` |
+| Divisive search | 5 | `SplitSearch` with truncation; d = 8 and d = 16 answered, union of paths gives no gain (DIVISIVE.md) |
+| Exact CDF criterion | 6 | `ExactChi`; paired power study never finished |
+| `n_boot` default of 100 vs 1000 in the configs | 0b / 8 | Still open: `api.py:42` defaults to 100 |
 
 ## b) Text TODOs
 
@@ -221,9 +228,12 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
     finite candidate set in `𝒞_*` per stage (guard at `structure.py:90-92`).
     Say so in one sentence.
 - **T15. "R package catci"** (lines 142, 402, 494) should now say Python (ff19ca5).
-- **T16. The xgboost hyperparameters are frozen JSONs from the R tuning**
-  (`experiments/tuning/n1000_numclass8/`); the text (217, 402, 615) should say how
-  they were chosen.
+- **T16. Learners and tuning.** The text (217, 402) names xgboost as the learner.
+  On master the **MLP is the default** in `catci_test` and every experiment runs
+  both learners, paired on the same data. Hyperparameters now come from a K-fold
+  CV tuner (`tuning.py`, `experiments/tune.py`), not frozen R tunings; line 615's
+  "pre-tune … on 1000 datasets" should describe it. The text should also say that
+  propensities beat uniform only up to moderate `d`.
 
 ### Experiments section
 
@@ -233,23 +243,27 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
   sin_sin; power (step) lin_lin and sin_sin. The strength grid 0.2-1.8 and
   `n_boot = 1000` are not stated. The power configs also compute mGCM, chi_sq and
   multinomial, which the figures don't show.
-- **T18. Worktree results ready to become paper sentences** (all minP-era unless
-  noted):
+- **T18. Results on master ready to become paper sentences** (minP-era unless
+  noted; the source docs have the current numbers):
   - Beam does not help, even on a setting built to trap greedy, so "greedy
-    suffices because the calibration charges for search breadth" (alt-search).
-  - Random paths lose to greedy on step designs and tie on the tree; sample
-    splitting loses heavily (alt-search).
-  - Divisive search: the full split matches merging; truncated splitting helps
-    only when the signal is coarse (+0.145 ± 0.029 at strength 0.6) and is about
-    60-150× cheaper (divisive-search).
-  - d-axis pilot (n = 2000, dy = 4, oracle): ordinal power decays gently, 0.64 at
-    dx = 8 to 0.49 at dx = 64, while euclid and max collapse and chi_sq/mGCM size
-    blows up (tuner-d-axis).
-  - MLP vs xgboost: learner choice doesn't affect size; power pending
-    (mlp-learner).
+    suffices because the calibration charges for search breadth" (SEARCH.md).
+  - Greedy beats random search by 7-25 points where the structure leaves the
+    final partition free; under a binary tree the structure, not the search,
+    supplies the adaptivity. Sample splitting loses 8-35 points, often below
+    plain χ² (SEARCH_COMPARISON.md, which flags its numbers as exploratory, with
+    a checklist before they go in the paper).
+  - Divisive search: the full split matches merging. Truncated splitting helps
+    only when the signal is coarse, and that gain is entirely multiplicity:
+    calibrating over 3 levels instead of 13. Union of merge and split paths gives
+    no gain (DIVISIVE.md). Suggests a weighted-minP remark or experiment.
+  - d-axis pilot (oracle propensities, up to dx = 256): ordinal power decays
+    gently while euclid and max collapse and chi_sq/mGCM size blows up; cost is
+    roughly cubic in dx (README).
+  - MLP vs xgboost: learner choice doesn't affect size (NOTES-mlp-learner.md).
   - Adult and the semi-synthetic study: 5 of 6 Fig 1b pairs flip to rejection; a
-    planted direction A&T cannot see (A&T 0.060 vs catci 1.000). **Pre-minP, needs
-    re-running.**
+    planted direction A&T cannot see (A&T 0.060 vs catci 1.000). **Pre-minP, still
+    on the unmerged `adult-application` / `worktree-adult-semisynth` branches;
+    needs re-running.**
 
 ### Abstract and discussion
 
@@ -264,15 +278,10 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
 
 ## Housekeeping
 
-- TODO.md item 3 is done on master but not marked done; item 6 still points to the
-  deleted `exact-pvalue-criteria` worktree (it is on master, 0908335).
-- `alt-search` has no notes file. `NOTES-mlp-learner.md` still describes the
-  pre-minP inflation.
-- Stale branches: `refactor` (fully merged), `origin/worktree-structures` (same as
-  master), `origin/worktree-divisive-search` (superseded by `-vec`).
-- Merge conflicts waiting:
-  - `tuner-d-axis` and `mlp-learner` both add `experiments/tune.py` and both edit
-    `config.py` and `run.py`.
-  - `alt-search` and `divisive-search` both add a `search=` hook to
-    `adaptive_pvalue` and both change `search.py`.
-- Every active worktree is 3 commits behind master (the structures merge).
+- TODO.md (untracked) still lists items 1, 2, 3, 5 and 7 without a DONE marker,
+  and item 6 points to the deleted `exact-pvalue-criteria` worktree.
+- Stale branches: `refactor` (fully merged); remote copies of the now-merged
+  research branches (`origin/worktree-{alt-search,divisive-search,
+  divisive-search-vec,mlp-learner,structures,tuner-d-axis}`).
+- Still unmerged: `adult-application` and `worktree-adult-semisynth` (TODO 4a,
+  pre-minP, with an uncommitted `experiments/adult_semisynth.py`).
