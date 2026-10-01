@@ -78,3 +78,25 @@ CPU per search (median of 20 reps):
 
 The divisive search scores each partition once however many draws reach it, so its
 cost grows sub-linearly in `B`; the merge search is linear. Calibration is ~3 ms.
+
+### Education x Income, n = 1000 -- power, real (monotone) direction, 300 reps per lam
+
+Rejection at B = 10000 (SE <= 0.020; paired differences vs merge in brackets):
+
+| lam | split@1 | split@2 | split@4 | split (14) | merge | mergecoarse@2 | max | euclid | mGCM |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.2 | 0.317 (+.033 ± .019) | 0.310 | 0.310 | 0.280 | 0.283 | 0.293 | 0.157 | 0.173 | 0.153 |
+| 0.3 | 0.613 (+.047 ± .019) | 0.610 | 0.603 | 0.570 | 0.567 | 0.600 | 0.303 | 0.400 | 0.263 |
+| 0.4 | 0.903 (+.057 ± .014) | 0.897 (+.050 ± .014) | 0.890 | 0.857 | 0.847 | 0.873 (+.027 ± .010) | 0.540 | 0.693 | 0.480 |
+| 0.5 | 0.987 | 0.987 | 0.987 | 0.977 | 0.980 | 0.977 | 0.753 | 0.917 | 0.713 |
+
+* **Truncated split beats the full merge by 4--6 points at lam = 0.3--0.4** (about 3--4
+  paired SEs), +3 at 0.2, nothing at the ceiling. Shallower is better: split@1 >=
+  split@2 >= split@4 > split@8 > full split.
+* **It also beats the merge path truncated to the same depth** (split@2 vs
+  mergecoarse@2: +2.4 points at lam = 0.4), so on this effect the divisive *direction*
+  adds something beyond the multiplicity saving that DIVISIVE.md found at d = 8.
+* **Adaptive searches beat every depth-0 statistic by 11--37 points.**
+* **B barely matters for power**: 1--3 points from B = 100 to 1000, flat beyond.
+* Caveat: truncated split runs ~1 point over nominal size (section above), worth
+  ~1 point of this advantage. Size-adjusted, the gain is ~3--5 points.
