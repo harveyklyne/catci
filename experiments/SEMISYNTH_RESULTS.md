@@ -128,6 +128,24 @@ split@2 -0.020 / -0.013 / -0.023 / 0.000; mergecoarse@2 +0.013 / **+0.037 ± 0.0
   coarse end (`mergecoarse@k`) is the most robust of the three across both
   directions on this pair.
 
+### Is the size excess a bug? Gaussian-vs-real check (`gauss_check.py`)
+
+Education x Income, n = 1000, oracle, 1000 null reps, B = 3000 (SE 0.007). Each
+replicate scores the real `T` and a fresh draw from `N(0, Sigma_hat)` against the
+*same* bootstrap draws and tie-breaks.
+
+| | real T | Gaussian T |
+|---|---|---|
+| split@1 / @2 / @3 / @4 | 0.060 / 0.059 / 0.061 / 0.061 | 0.043 / 0.044 / 0.047 / 0.048 |
+| mergecoarse@1 / @2 / @3 / @4 | 0.066 / 0.065 / 0.068 / 0.065 | 0.049 / 0.051 / 0.049 / 0.051 |
+| merge | 0.059 | 0.047 |
+
+* **The search and minP calibration are correct:** the Gaussian arm is nominal.
+* **The ~1--1.5 point excess comes from the data:** the finite-`n` gap between `T` and
+  `N(0, Sigma_hat)` at n = 1000 (rare Education levels the likely driver), shared by
+  every method including the full merge. Expected to shrink with `n`; the n = 2000
+  HoursPerWeek x Education size sweep that would test that was stopped.
+
 ## Not run (queues stopped at the user's request, 2026-09-30 ~22:45)
 
 HoursPerWeek x Education real/planted power sweeps; the Occupation (Census tree)
