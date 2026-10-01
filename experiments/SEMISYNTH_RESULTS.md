@@ -100,3 +100,43 @@ Rejection at B = 10000 (SE <= 0.020; paired differences vs merge in brackets):
 * **B barely matters for power**: 1--3 points from B = 100 to 1000, flat beyond.
 * Caveat: truncated split runs ~1 point over nominal size (section above), worth
   ~1 point of this advantage. Size-adjusted, the gain is ~3--5 points.
+
+### Education x Income, n = 1000 -- power, planted (non-monotone, Q1-blind) direction, 300 reps per lam
+
+Rejection at B = 10000 (SE <= 0.020):
+
+| lam | split@1 | split@2 | split@4 | split (14) | merge | mergecoarse@2 | max | euclid | mGCM |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.0 | 0.440 | 0.430 | 0.440 | 0.443 | 0.450 | 0.463 | 0.227 | 0.250 | 0.130 |
+| 1.4 | 0.693 | 0.710 | 0.723 | 0.720 | 0.723 | **0.760** | 0.413 | 0.503 | 0.290 |
+| 1.7 | 0.907 | 0.903 | 0.910 | 0.913 | 0.927 | **0.937** | 0.697 | 0.783 | 0.520 |
+| 2.0 | 0.977 | 0.970 | 0.977 | 0.967 | 0.970 | 0.973 | 0.810 | 0.897 | 0.700 |
+
+Paired vs merge: split@1 -0.010 / -0.030 / -0.020 / +0.007 (SE 0.009--0.021);
+split@2 -0.020 / -0.013 / -0.023 / 0.000; mergecoarse@2 +0.013 / **+0.037 ± 0.013** /
++0.010 / +0.003.
+
+* **The real-direction ranking reverses.** On this middle-vs-extremes contrast,
+  truncated split is 1--3 points *below* the full merge (each ~1--1.5 SE), and the
+  merge path truncated to the same depth is best.
+* Likely mechanism: on an ordinal variable a divisive split cuts into contiguous
+  pieces, so isolating the middle levels takes two splits from the top, whereas
+  merging builds the middle group from below.
+* Adaptive searches still beat every depth-0 statistic by 20--30 points.
+* **Net so far:** truncated split wins on monotone effects (+4--6) and concedes a
+  little on non-monotone ones (-1 to -3). Not uniformly best; the merge path's
+  coarse end (`mergecoarse@k`) is the most robust of the three across both
+  directions on this pair.
+
+## Not run (queues stopped at the user's request, 2026-09-30 ~22:45)
+
+HoursPerWeek x Education real/planted power sweeps; the Occupation (Census tree)
+sweep; the oracle + MLP learner arm at B = 10000; Occupation tree vs Saturated.
+Launch commands are in the session's queue scripts and are reproduced by:
+
+    python sweep_semisynth.py --x HoursPerWeek --y Education --n 2000 --direction real --lams 0.2 0.3 0.4 0.5 --reps 300 --time-reps 0
+    python sweep_semisynth.py --x HoursPerWeek --y Education --n 2000 --direction planted --lams 0.55 0.7 0.85 1.0 --reps 300 --time-reps 0
+    python sweep_semisynth.py --x Occupation --y Income --n 1000 --lams 0 --reps 1000 --time-reps 20
+    python sweep_semisynth.py --x Occupation --y Income --n 1000 --direction real --lams 0.2 0.3 0.4 0.5 --reps 300 --time-reps 0
+    python sweep_semisynth.py --x Occupation --y Income --n 1000 --direction planted --lams 0.6 0.9 1.25 1.55 --reps 300 --time-reps 0
+    python run_semisynth.py --x Education --y Income --lams 0 --reps 500 --n-boot 10000 --learners oracle mlp --truncations 1 2 4
