@@ -92,6 +92,10 @@ experiments/
   bench_learners.py  propensity quality: E_f, the Assumption 1 remainder
   report_learners.py print the size/power/propensity comparison tables
   bench_sweep.sh     drive the whole learner comparison
+  adult.py       UCI adult income, preprocessed as Ankan & Textor describe it
+  ankan_textor.py  their AAAI-23 test (LS residuals + Q1/Q2/Q3), ported
+  run_adult.py   the 36-pair real-data sweep
+  ADULT.md       what that reproduces, and what it cannot
 
 tests/
   fixtures/      the frozen R oracle (see fixtures/README.md)
@@ -348,6 +352,22 @@ so the fixtures deliberately
 pin only pure input to output maps, never bootstrap or randomised tie-break
 paths. See `tests/fixtures/README.md` for the JSON conventions.
 
+## Real data
+
+`experiments/ADULT.md` documents a port of Ankan & Textor (AAAI-23) applied to
+UCI adult income. Two things there are worth knowing outside that file:
+
+- **Their paper reports no p-values from their own method.** Fig. 1b's p-values
+  are the stratified-MI baseline it argues against; Figs. 8a/8b are a skeleton and
+  an F1 curve. The port is validated by properties plus one numeric anchor (Fig.
+  1b's df column, which reproduces exactly and pins the preprocessing), not
+  value-for-value.
+- **Their `Sigma_d` goes rank-deficient at high cardinality, silently.** When an X
+  level and a Y level never co-occur within a stratum of Z, a product column is
+  identically zero; `np.linalg.solve` still returns a number at a condition
+  number of 1e21. Any comparison of `catci` against this test needs the
+  `well_conditioned` flag, or it will be comparing against noise.
+
 ## Known gaps
 
 - **Results are stale.** Every figure in `experiments/results-r-legacy/` came
@@ -362,6 +382,9 @@ paths. See `tests/fixtures/README.md` for the JSON conventions.
 - **`form_t_sigma` materialises the `n x dx*dy` product matrix.** At
   application scale (`n ~ 7e4, dx*dy ~ 1e3`) that is ~1 GB, doubled by
   `np.cov`. It will need row-chunking before item 4.
+- **`catci` has not been run on adult income.** The Ankan & Textor side is done
+  and the data layer is shared; the semi-synthetic study (`ADULT_SEMISYNTH.md`)
+  is the next step.
 - **Index convention differs from the paper.** The appendix orders `dXdY`-space
   with `k` fastest; the code uses `j` (X) fastest, inherited from R's Kronecker
   layout. Self-consistent, but update formulae (24)-(27) will not line up

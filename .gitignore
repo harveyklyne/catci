@@ -16,6 +16,8 @@ dist/
 !NOTES-mlp-learner.md
 !MINP.md
 !TEXT.md
+!experiments/ADULT.md
+!experiments/ankan_textor_code_sources_2026-08.md
 
 # Simulation output (regenerate with experiments/run.py)
 experiments/results/
