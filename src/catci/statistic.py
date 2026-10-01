@@ -128,7 +128,18 @@ def max_abs(T_vector: np.ndarray, Sigma: np.ndarray) -> float:
 
 
 def mgcm(T_vector: np.ndarray, Sigma: np.ndarray) -> float:
-    return float(np.max(np.abs(T_vector / np.sqrt(np.diag(Sigma)))))
+    """Shah & Peters' studentised max ``max_j |T_j| / sqrt(Sigma_jj)``.
+
+    A coordinate with ``Sigma_jj = 0`` has an identically-zero residual product
+    (a level absent from the sample whose propensity is exactly 0), so ``T_j = 0``
+    and it carries no information; it is skipped rather than turning the max into
+    ``nan``.
+    """
+    sd = np.sqrt(np.diag(Sigma))
+    ok = sd > 0
+    if not ok.any():
+        return 0.0
+    return float(np.max(np.abs(T_vector[ok] / sd[ok])))
 
 
 # --------------------------------------------------------------------------- #

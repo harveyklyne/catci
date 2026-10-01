@@ -24,6 +24,7 @@ dist/
 experiments/results/
 experiments/results-r-legacy/
 experiments/results_divisive/
+experiments/results_semisynth/
 
 # Editor / OS
 .Rproj.user

@@ -1,0 +1,267 @@
+"""Size and power on the semi-synthetic adult data (``adult_semisynth.py``).
+
+Real ``(X, Z)`` rows from UCI adult, ``Y`` simulated from the mixture kernel, so
+the truth of ``X indep Y | Z`` is known exactly and ``lam`` dials the effect.
+
+Every replicate draws one dataset and, per learner, one set of bootstrap draws;
+every method is calibrated on exactly those, so differences between methods are
+**paired**. The learners share their bootstrap seed too (common random numbers),
+so ``oracle`` vs a fitted learner isolates the cost of estimating the nuisances
+from the effect of the search.
+
+Learners:
+
+* ``oracle`` -- the exact population propensities (:func:`adult_semisynth.true_propensities`);
+* ``mlp`` / ``xgb`` -- fitted on the one-hot ``Z`` on the full sample, as
+  :func:`catci.catci_test` does.
+
+Methods (all on the same ``T, Sigma``, ``normalise=False``):
+
+* ``merge``            -- :class:`~catci.search.MergeSearch` (Algorithm 1)
+* ``split``, ``split@k`` -- :class:`~catci.search.SplitSearch`, full / truncated at
+  ``k`` levels. Needs ``Ordinal`` or ``Tree`` on both sides; skipped for ``Saturated``.
+* ``max``, ``euclid``, ``mGCM`` -- depth-0 comparators, minP-calibrated (``L = 1``).
+  ``mGCM`` studentises internally (Shah & Peters' normalised max).
+* ``chi_sq``           -- pseudo-inverse chi-square on ``(dx-1)(dy-1)`` df.
+* ``at_typed``         -- Ankan & Textor with each variable typed as the data
+  types it (Q1 for ordinal x ordinal), on the same propensities.
+* ``at_cat``           -- Ankan & Textor with both typed categorical (Q3).
+* ``strat_chi2``       -- Pearson chi-square stratified over the ``Z`` cells.
+
+Usage:
+    python run_semisynth.py --x Education --y Income --lams 0 --reps 500
+    python run_semisynth.py --x Education --y Income --direction planted \\
+        --lams 0 0.5 1 1.5 2 --learners oracle mlp --truncations 2 4
+    python run_semisynth.py --x Occupation --y Income --pool 5 --lams 0
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import time
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from scipy.stats import chi2
+
+import adult
+import adult_semisynth as ss
+import ankan_textor as at
+import methods
+from catci.bootstrap import bootstrap_T
+from catci.calibrate import double_bootstrap_pvalue
+from catci.gcm import form_t_sigma
+from catci.learners import fit_propensities, mlp_learner
+from catci.search import MergeSearch, SplitSearch
+from catci.statistic import ApproxChi, euclid, max_abs, mgcm
+from catci.structure import Ordinal, Saturated
+
+OUT = Path(__file__).resolve().parent / "results_semisynth"
+DEPTH0 = {"max": max_abs, "euclid": euclid, "mGCM": mgcm}
+
+
+def structure_for(kind: str, d: int):
+    """Ordinal variables get ``Ordinal``; unordered ones ``Saturated`` (merge only)."""
+    if kind == "ordinal" or d <= 2:
+        return Ordinal()
+    return Saturated()
+
+
+def searches(xs, ys, truncations, full_split: bool) -> dict:
+    out = {"merge": MergeSearch()}
+    if not (isinstance(xs, Saturated) or isinstance(ys, Saturated)):
+        if full_split:
+            out["split"] = SplitSearch()
+        out.update({f"split@{k}": SplitSearch(max_levels=k) for k in truncations})
+    return out
+
+
+def stratified_chi2(x, y, zcell) -> float:
+    """Pearson chi-square summed over ``Z`` cells, df summed over the observed sub-tables."""
+    stat, df = 0.0, 0
+    for c in np.unique(zcell):
+        m = zcell == c
+        xs, xi = np.unique(x[m], return_inverse=True)
+        ys, yi = np.unique(y[m], return_inverse=True)
+        if len(xs) < 2 or len(ys) < 2:
+            continue
+        tab = np.zeros((len(xs), len(ys)))
+        np.add.at(tab, (xi, yi), 1.0)
+        E = tab.sum(1, keepdims=True) * tab.sum(0, keepdims=True) / tab.sum()
+        stat += float(((tab - E) ** 2 / E).sum())
+        df += (len(xs) - 1) * (len(ys) - 1)
+    return float(chi2.sf(stat, df)) if df > 0 else 1.0
+
+
+_AT_NOTE: list = []
+
+
+def ankan_textor_pvalue(rx, ry, kx, ky) -> float:
+    """The paper's ``solve`` form; ``pinv`` (df = rank) only when that is singular.
+
+    A rare level whose propensity is exactly 0 in every sampled stratum gives an
+    all-zero residual column, so ``Sigma_d`` is singular and the paper's statistic
+    is undefined. ``pinv`` is the port's documented fallback; the row is flagged in
+    ``note`` so those replicates can be excluded or reported.
+    """
+    try:
+        res = at.test_from_residuals(rx, ry, kx, ky)
+        if res.well_conditioned:
+            _AT_NOTE.append("")
+            return res.p_value
+    except np.linalg.LinAlgError:
+        pass
+    _AT_NOTE.append("pinv")
+    return at.test_from_residuals(rx, ry, kx, ky, method="pinv").p_value
+
+
+def fitted_propensities(learner: str, rep: ss.Replicate, z_levels, dx, dy):
+    if learner == "oracle":
+        return rep.f_true, rep.g_true
+    design = at.design_matrix(rep.z, z_levels, drop_first=False)
+    if learner == "mlp":
+        lr = mlp_learner()
+    elif learner == "xgb":
+        from catci.learners import xgboost_learner
+        lr = xgboost_learner(dict(eta=0.1, max_depth=3, gamma=0.0, nrounds=100))
+    else:
+        raise ValueError(f"unknown learner {learner!r}")
+    return fit_propensities(design, rep.x, dx, lr), fit_propensities(design, rep.y, dy, lr)
+
+
+def one_rep(task) -> list[dict]:
+    args, lam, rep_id, seed = task
+    pop, delta, kinds, z_levels = _setup(args)
+    dx, dy = pop.dx, pop.dy
+    data_rng, boot_seed, method_seed = np.random.default_rng(seed).spawn(3)
+    rep = ss.draw(pop, args.n, lam, data_rng, z_names=tuple(args.z), replace=True, delta=delta)
+    zcell = np.unique(rep.z, axis=0, return_inverse=True)[1].ravel()
+    xs, ys = structure_for(kinds[0], dx), structure_for(kinds[1], dy)
+    stat = ApproxChi()
+
+    rows = []
+    for learner in args.learners:
+        t0 = time.perf_counter()
+        f, g = fitted_propensities(learner, rep, z_levels, dx, dy)
+        fit_s = time.perf_counter() - t0
+        ts = form_t_sigma(rep.x, rep.y, f, g, normalise=False)
+        # Common random numbers: every learner sees the same N(0, I) draws.
+        boot = bootstrap_T(ts.Sigma, args.n_boot, np.random.default_rng(boot_seed))
+        T_all = np.column_stack([ts.T_vector, boot])
+        rng = np.random.default_rng(method_seed)  # tie-breaks in the calibration
+
+        def record(name, p, seconds, paths=None):
+            rows.append(dict(
+                method=name, learner=learner, lam=lam, rep=rep_id, p_value=float(p),
+                seconds=seconds, fit_seconds=fit_s,
+                note="", levels=None if paths is None else paths.shape[0],
+                argmax_level=None if paths is None else int(np.argmax(paths[:, 0])),
+            ))
+
+        for name, search in searches(xs, ys, args.truncations, args.full_split).items():
+            t1 = time.perf_counter()
+            paths = search.paths(T_all, ts.Sigma, dx, dy, xs, ys, stat)
+            sec = time.perf_counter() - t1
+            record(name, double_bootstrap_pvalue(paths[:, 0], paths[:, 1:], rng), sec, paths)
+        for name, fn in DEPTH0.items():
+            t1 = time.perf_counter()
+            path = np.array([[fn(T_all[:, b], ts.Sigma) for b in range(T_all.shape[1])]])
+            record(name, double_bootstrap_pvalue(path[:, 0], path[:, 1:], rng),
+                   time.perf_counter() - t1)
+
+        fitted = methods.Fitted(rep.x, rep.y, rep.z, f, g, dx, dy, ts.T_vector, ts.Sigma)
+        record("chi_sq", methods.chi_sq(fitted), 0.0)
+        for name, (kx, ky) in {"at_typed": kinds, "at_cat": ("categorical", "categorical")}.items():
+            rx = at.residual_matrix(rep.x, f, kx)
+            ry = at.residual_matrix(rep.y, g, ky)
+            record(name, ankan_textor_pvalue(rx, ry, kx, ky), 0.0)
+            rows[-1]["note"] = _AT_NOTE.pop()
+
+    # Learner-free competitor: once per replicate.
+    rows.append(dict(method="strat_chi2", learner="none", lam=lam, rep=rep_id,
+                     p_value=stratified_chi2(rep.x, rep.y, zcell), seconds=0.0,
+                     fit_seconds=0.0, note="", levels=None, argmax_level=None))
+    return rows
+
+
+_CACHE: dict = {}
+
+
+def _setup(args):
+    """Population, direction, kinds and Z level counts -- built once per worker."""
+    key = (args.x, args.y, tuple(args.w), args.pool, args.n, args.direction)
+    if key not in _CACHE:
+        data = adult.load()
+        if args.pool:
+            for name in (args.x, args.y):
+                if data.kind(name) == "categorical":
+                    data = ss.pool_rare(data, name, args.pool, args.n)
+        pop = ss.build_population(data, args.x, args.y, args.w)
+        delta = pop.delta_real() if args.direction == "real" else ss.planted_direction(pop)
+        kinds = (data.kind(args.x), data.kind(args.y))
+        z_levels = [data.n_levels(name) for name in args.z]
+        _CACHE[key] = (pop, delta, kinds, z_levels)
+    return _CACHE[key]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--x", required=True)
+    ap.add_argument("--y", required=True)
+    ap.add_argument("--w", nargs="+", default=list(ss.DEFAULT_W),
+                    help="generating stratum (Y depends on X only within W cells)")
+    ap.add_argument("--z", nargs="+", default=None,
+                    help="conditioning set tested; must contain --w (default: --w)")
+    ap.add_argument("--direction", default="real", choices=["real", "planted"])
+    ap.add_argument("--lams", type=float, nargs="+", default=[0.0])
+    ap.add_argument("--n", type=int, default=1000)
+    ap.add_argument("--pool", type=float, default=5.0,
+                    help="pool categorical levels with expected count < this (0 = off)")
+    ap.add_argument("--learners", nargs="+", default=["oracle"])
+    ap.add_argument("--truncations", type=int, nargs="+", default=[2, 4])
+    ap.add_argument("--no-full-split", dest="full_split", action="store_false")
+    ap.add_argument("--reps", type=int, default=200)
+    ap.add_argument("--n-boot", type=int, default=1000)
+    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--tag", default="")
+    args = ap.parse_args()
+    args.z = args.z or list(args.w)
+
+    pop, delta, kinds, _ = _setup(args)
+    print(f"{args.x} ({kinds[0]}, dx={pop.dx}) x {args.y} ({kinds[1]}, dy={pop.dy}) "
+          f"| Z={args.z}, W={args.w}, direction={args.direction}, "
+          f"max_lambda={ss.max_lambda(pop, delta):.3f}, ncp/n={pop.ncp_per_n(delta):.4g}")
+
+    seeds = np.random.SeedSequence(args.seed).spawn(len(args.lams) * args.reps)
+    tasks = [(args, lam, r, seeds[i * args.reps + r])
+             for i, lam in enumerate(args.lams) for r in range(args.reps)]
+    t0 = time.time()
+    with ProcessPoolExecutor(args.workers) as ex:
+        rows = [row for rr in ex.map(one_rep, tasks, chunksize=1) for row in rr]
+    df = pd.DataFrame(rows)
+
+    OUT.mkdir(exist_ok=True)
+    zs = "-".join(args.z)
+    stem = (f"{args.x}_{args.y}_{args.direction}_Z{zs}_n{args.n}_B{args.n_boot}"
+            f"_r{args.reps}{('_' + args.tag) if args.tag else ''}")
+    df.to_parquet(OUT / f"{stem}.parquet", index=False)
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    (OUT / f"{stem}.provenance.json").write_text(json.dumps(
+        dict(vars(args), git_commit=commit, seconds=time.time() - t0), indent=2))
+
+    print(f"\n### {stem}  ({time.time() - t0:.0f}s)  size SE~{np.sqrt(0.05 * 0.95 / args.reps):.3f}")
+    df["reject"] = df.p_value < 0.05
+    order = list(dict.fromkeys(df.method))
+    print(df.pivot_table(index=["learner", "lam"], columns="method", values="reject", sort=False)
+            [order].round(3).to_string())
+    print("\nmean seconds per test (search + calibration):")
+    print(df.groupby("method", sort=False)["seconds"].mean().round(3).to_string())
+
+
+if __name__ == "__main__":
+    main()
