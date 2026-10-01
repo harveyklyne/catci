@@ -16,6 +16,21 @@ the loop, so ``get_num_levels`` does not exist. ``partition`` is the current
 list of groups (each a list of 1-based original labels); returned ``(i, j)`` are
 1-based positions in that partition, ``i < j``. Every structure returns ``[]``
 once the partition has ``<= 2`` groups (the ``(d > 2)`` guard, by construction).
+
+:func:`~catci.search.divisive_search` walks the same lattice top-down, so a
+structure answers two more questions::
+
+    structure.coarsest_partitions(d) -> [partition, ...]
+    structure.permitted_splits(partition) -> [(i, a, b), ...]
+
+``(i, a, b)`` means "replace the group at 1-based position ``i`` by ``a``, then
+``b``", with ``a + b`` a rearrangement of that group and ``b`` inserted directly
+after ``a`` -- which keeps groups ordered by least label, the same invariant the
+merge loop maintains. A merge has one obvious inverse, but a *start* does not:
+merging bottoms out at a unique singleton partition while there are many
+two-group partitions, so ``coarsest_partitions`` returns all the structure
+permits and the search picks between them by statistic. A tree names its own
+coarsest split, so it returns one; an ordinal variable returns ``d - 1``.
 """
 
 from __future__ import annotations
@@ -26,6 +41,7 @@ from typing import Hashable, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 __all__ = [
+    "Split",
     "Structure",
     "Ordinal",
     "Saturated",
@@ -37,6 +53,7 @@ __all__ = [
 
 Partition = Sequence[Sequence[int]]
 Pair = Tuple[int, int]
+Split = Tuple[int, List[int], List[int]]
 
 
 class Structure:
@@ -86,6 +103,12 @@ class Structure:
             mask[b, s, t] = True
         return mask
 
+    def coarsest_partitions(self, d: int) -> List[Partition]:  # pragma: no cover
+        raise NotImplementedError
+
+    def permitted_splits(self, partition: Partition) -> List[Split]:  # pragma: no cover
+        raise NotImplementedError
+
 
 def _guard(sizes: np.ndarray) -> np.ndarray:
     """``(B, 1, 1)`` mask of partitions with more than two groups (the ``d > 2`` guard)."""
@@ -106,6 +129,20 @@ class Ordinal(Structure):
         pos = np.cumsum(active, axis=1)
         nxt = pos[:, None, :] == pos[:, :, None] + 1
         return nxt & active[:, :, None] & active[:, None, :] & _guard(sizes)
+
+    def coarsest_partitions(self, d: int) -> List[Partition]:
+        """Every contiguous two-group partition ``{1..c} | {c+1..d}``."""
+        if d < 2:
+            raise ValueError("Need d >= 2.")
+        return [[list(range(1, c + 1)), list(range(c + 1, d + 1))] for c in range(1, d)]
+
+    def permitted_splits(self, partition: Partition) -> List[Split]:
+        """Cut each group at every interior position; groups stay intervals."""
+        out: List[Split] = []
+        for i, group in enumerate(partition, start=1):
+            g = list(group)
+            out.extend((i, g[:c], g[c:]) for c in range(1, len(g)))
+        return out
 
 
 class Cyclic(Structure):
@@ -135,7 +172,13 @@ class Cyclic(Structure):
 
 
 class Saturated(Structure):
-    """All pairs (the 'greedy' search in the R package)."""
+    """All pairs (the 'greedy' search in the R package).
+
+    Has no divisive counterpart: splitting a group of size ``s`` into two admits
+    ``2^(s-1) - 1`` bipartitions, so the top-down candidate set is exponential
+    where the bottom-up one is quadratic. This asymmetry is the whole reason
+    ``divisive_search`` is restricted to Ordinal and Tree.
+    """
 
     def permitted_merges(self, partition: Partition) -> List[Pair]:
         d = len(partition)
@@ -148,6 +191,19 @@ class Saturated(Structure):
         d = sizes.shape[1]
         upper = np.triu(np.ones((d, d), dtype=bool), k=1)
         return upper & active[:, :, None] & active[:, None, :] & _guard(sizes)
+
+    def coarsest_partitions(self, d: int) -> List[Partition]:
+        raise NotImplementedError(_SATURATED_HAS_NO_SPLITS)
+
+    def permitted_splits(self, partition: Partition) -> List[Split]:
+        raise NotImplementedError(_SATURATED_HAS_NO_SPLITS)
+
+
+_SATURATED_HAS_NO_SPLITS = (
+    "Saturated has no tractable divisive counterpart (2^(s-1) - 1 bipartitions "
+    "per group of size s). Use Ordinal or Tree with divisive_search, or "
+    "Saturated with greedy_search."
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -200,6 +256,20 @@ def _check_tree(node: TreeNode) -> None:
         raise ValueError(f"Children of {node.root} do not partition it.")
     for c in node.children:
         _check_tree(c)
+
+
+def _find_node(labels: Sequence[int], tree: TreeNode) -> TreeNode:
+    """The node of ``tree`` whose leaf-set is exactly ``labels``."""
+    target = set(labels)
+    node = tree
+    while set(node.root) != target:
+        for child in node.children:
+            if target <= set(child.root):
+                node = child
+                break
+        else:
+            raise ValueError(f"No node of the tree has leaf-set {sorted(target)}.")
+    return node
 
 
 class Tree(Structure):
@@ -373,6 +443,25 @@ class Tree(Structure):
         upper = np.triu(np.ones((d, d), dtype=bool), k=1)
         same = ctx[:, :, None] == ctx[:, None, :]
         return same & upper & active[:, :, None] & active[:, None, :] & _guard(sizes)
+
+    def coarsest_partitions(self, d: int) -> List[Partition]:
+        """The root's children -- a tree names its own coarsest split, so there is one."""
+        if len(self.tree.children) != 2:
+            raise ValueError("Divisive tree search needs a binary tree (the root has "
+                             f"{len(self.tree.children)} children).")
+        return [[list(c.root) for c in self.tree.children]]
+
+    def permitted_splits(self, partition: Partition) -> List[Split]:
+        """Split each group into the children of the node it corresponds to."""
+        out: List[Split] = []
+        for i, group in enumerate(partition, start=1):
+            children = _find_node(group, self.tree).children
+            if len(children) == 2:
+                a, b = children
+                out.append((i, list(a.root), list(b.root)))
+            elif children:  # an n-ary node, e.g. from Tree.from_parents
+                raise ValueError("Divisive tree search needs binary (or leaf) nodes.")
+        return out
 
 
 def _is_root(parent) -> bool:

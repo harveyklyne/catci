@@ -22,7 +22,8 @@ from catci.bootstrap import bootstrap_T
 from catci.calibrate import bonferroni_pvalue, double_bootstrap_pvalue
 from catci.statistic import ExactChi, euclid, max_abs, mgcm
 from catci.gcm import form_t_sigma
-from catci.search import greedy_search, greedy_search_paths
+from catci.search import (beam_search_paths, evaluate_paths, greedy_search,
+                          greedy_search_paths, random_merges)
 from catci.structure import Ordinal, Saturated, Tree
 
 SEARCHES = ("tree", "ordinal", "greedy")
@@ -32,10 +33,20 @@ SEARCHES = ("tree", "ordinal", "greedy")
 # And a `<name>_exact` variant: minP-calibrated, but every coarsening is scored by
 # the exact weighted-chi-square CDF instead of Box's approximation. Same draws, so
 # the pair is a paired comparison.
+#
+# TODO item 7 variants, same structures, same minP calibration:
+#   `<name>_random` -- one merge path drawn at random (ignoring the data), shared by
+#                      the observed and every bootstrap draw;
+#   `<name>_split`  -- greedy path chosen on a random half of the rows, then
+#                      evaluated and calibrated on the other half only;
+#   `greedy_beam<w>` -- beam search of width w over all pairs (w = 1 is `greedy`).
+# experiments/search_study.py is the Gaussian-limit power study of all of these.
+ALTERNATIVES = tuple(f"{s}_{v}" for s in SEARCHES for v in ("random", "split")) + ("greedy_beam5",)
 ADAPTIVE = (
     SEARCHES
     + tuple(f"{s}_bonf" for s in SEARCHES)
     + tuple(f"{s}_exact" for s in SEARCHES)
+    + ALTERNATIVES
     + ("max", "euclid", "mGCM")
 )
 COMPETITORS = ("ankan", "chi_sq", "multinomial")
@@ -64,26 +75,61 @@ class Fitted:
 # --------------------------------------------------------------------------- #
 # Adaptive methods (shared bootstrap draws, matching R evaluate_sim)
 # --------------------------------------------------------------------------- #
-def _statistic_paths(name, dx, dy, T, Sigma, exact, n_jobs=1):
+def _structures(name, dx, dy):
+    return {
+        "tree": lambda: (Tree.binary(dx), Tree.binary(dy)),
+        "ordinal": lambda: (Ordinal(), Ordinal()),
+        "greedy": lambda: (Saturated(), Saturated()),
+    }[name]()
+
+
+def _statistic_paths(name, dx, dy, T, Sigma, exact, n_jobs=1, rng=None):
     """Statistic paths ``(L, B)`` for every column of ``T`` (``L = 1`` for depth-0).
 
     ``name`` is a base name (no ``_bonf`` / ``_exact`` suffix). The approximate
     statistic runs as one batched search; ``exact`` (an :class:`ExactChi`, shared so
     its spectrum cache spans draws and structures) runs the per-draw loop.
+    ``<search>_random`` draws its one path from ``rng``.
     """
-    search_structs = {
-        "tree": lambda: (Tree.binary(dx), Tree.binary(dy)),
-        "ordinal": lambda: (Ordinal(), Ordinal()),
-        "greedy": lambda: (Saturated(), Saturated()),
-    }
-    if name in search_structs:
-        xs, ys = search_structs[name]()
+    search, _, variant = name.partition("_")
+    if search in SEARCHES and variant == "random":
+        xs, ys = _structures(search, dx, dy)
+        return evaluate_paths(T, Sigma, dx, dy, random_merges(dx, dy, xs, ys, rng))
+    if search in SEARCHES and variant.startswith("beam"):
+        xs, ys = _structures(search, dx, dy)
+        return beam_search_paths(T, Sigma, dx, dy, xs, ys, int(variant.removeprefix("beam")),
+                                 n_jobs=n_jobs)
+    if name in SEARCHES:
+        xs, ys = _structures(name, dx, dy)
         if exact is None:
             return greedy_search_paths(T, Sigma, dx, dy, xs, ys, n_jobs=n_jobs)
         return np.column_stack([greedy_search(T[:, b], Sigma, dx, dy, xs, ys, exact).values
                                 for b in range(T.shape[1])])
     scalar = {"max": max_abs, "euclid": euclid, "mGCM": mgcm}[name]
     return np.array([[scalar(T[:, b], Sigma) for b in range(T.shape[1])]])
+
+
+def split_pvalue(fitted: Fitted, name: str, n_boot: int, rng: np.random.Generator,
+                 normalise: bool = False) -> float:
+    """Sample-split search: choose the greedy path on half A, test it on half B only.
+
+    The propensities are the full-sample ones in ``fitted`` (no refitting per half),
+    so the halves are independent only up to that shared fit -- exact with oracle
+    propensities, asymptotically so otherwise.
+    """
+    xs, ys = _structures(name.removesuffix("_split"), fitted.dx, fitted.dy)
+    perm = rng.permutation(fitted.x.shape[0])
+    A, B = perm[: perm.size // 2], perm[perm.size // 2:]
+
+    def half(rows):
+        return form_t_sigma(fitted.x[rows], fitted.y[rows], fitted.f[rows], fitted.g[rows],
+                            normalise=normalise)
+
+    ts_A, ts_B = half(A), half(B)
+    merges = greedy_search(ts_A.T_vector, ts_A.Sigma, fitted.dx, fitted.dy, xs, ys).merges
+    T_all = np.column_stack([ts_B.T_vector, bootstrap_T(ts_B.Sigma, n_boot, rng)])
+    paths = evaluate_paths(T_all, ts_B.Sigma, fitted.dx, fitted.dy, merges)
+    return double_bootstrap_pvalue(paths[:, 0], paths[:, 1:], rng)
 
 
 def adaptive_pvalues(fitted: Fitted, method_names, n_boot: int, rng: np.random.Generator,
@@ -98,12 +144,15 @@ def adaptive_pvalues(fitted: Fitted, method_names, n_boot: int, rng: np.random.G
 
     out, cache = {}, {}
     for name in method_names:
+        if name.endswith("_split"):  # its own half-sample (T, Sigma) and draws
+            out[name] = split_pvalue(fitted, name, n_boot, rng)
+            continue
         # `_bonf` changes the calibration, `_exact` the statistic; neither the search.
         base = name.removesuffix("_bonf").removesuffix("_exact")
         key = (base, name.endswith("_exact") and base in SEARCHES)  # depth-0 scalars have no exact variant
         if key not in cache:  # `x` and `x_bonf` share one statistic path
             cache[key] = _statistic_paths(base, fitted.dx, fitted.dy, T_all, Sigma,
-                                          exact_statistic if key[1] else None, n_jobs)
+                                          exact_statistic if key[1] else None, n_jobs, rng)
         paths = cache[key]
         calibrate = bonferroni_pvalue if name.endswith("_bonf") else double_bootstrap_pvalue
         out[name] = calibrate(paths[:, 0], paths[:, 1:], rng)

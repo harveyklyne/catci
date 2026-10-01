@@ -10,13 +10,17 @@ dist/
 # Working notes are scratch by default; tracked docs are opted in below.
 *.md
 !README.md
+!SEARCH.md
+!SEARCH_COMPARISON.md
 !tests/fixtures/README.md
+!NOTES-mlp-learner.md
 !MINP.md
 !TEXT.md
 
 # Simulation output (regenerate with experiments/run.py)
 experiments/results/
 experiments/results-r-legacy/
+experiments/results_divisive/
 
 # Editor / OS
 .Rproj.user
@@ -24,3 +28,6 @@ experiments/results-r-legacy/
 
 *.pdf
 /related-literature/
+
+# Paper source (kept outside git)
+/Conditional_independence_testing_with_categorical_data/

@@ -14,8 +14,8 @@ import numpy as np
 from .calibrate import adaptive_pvalue
 from .statistic import ApproxChi, ExactChi
 from .gcm import form_t_sigma
-from .learners import Learner, fit_propensities
-from .search import greedy_search
+from .learners import Learner, fit_propensities, mlp_learner
+from .search import MergeSearch
 from .structure import Structure
 
 __all__ = ["CatciResult", "catci_test"]
@@ -44,11 +44,14 @@ def catci_test(
     rng: Optional[np.random.Generator] = None,
     statistic: str = "approx",
     n_jobs: int = 1,
+    search=None,
 ) -> CatciResult:
     """Test conditional independence ``X _||_ Y | Z`` for categorical ``X, Y``.
 
-    Provide propensities directly (``f``, ``g`` -- the oracle path) or a
-    ``learner`` plus ``z`` to fit them on the full sample. Returns the p-value
+    Provide propensities directly (``f``, ``g`` -- the oracle path) or ``z`` to
+    fit them on the full sample with ``learner``, which defaults to
+    :func:`~catci.learners.mlp_learner` at its tuned defaults (pass
+    ``xgboost_learner(...)`` for the boosted alternative). Returns the p-value
     together with the observed statistic path and the partitions the search
     visited. ``n_jobs`` threads share the bootstrap searches (``-1`` = all cores).
 
@@ -57,6 +60,11 @@ def catci_test(
     CDF of the same ``||T||^2``. They select the same partitions and give the
     same p-values in practice, and ``"exact"`` is ~30x slower -- it is there to
     show that, not for routine use.
+
+    ``search`` picks the direction the label search runs in:
+    :class:`~catci.search.MergeSearch` (the default) merges up from singletons,
+    :class:`~catci.search.SplitSearch` splits down from two groups per dimension
+    and can be truncated with ``max_levels``.
     """
     x = np.asarray(x)
     y = np.asarray(y)
@@ -66,8 +74,10 @@ def catci_test(
         rng = np.random.default_rng()
 
     if f is None or g is None:
-        if learner is None or z is None:
-            raise ValueError("Provide either (f, g) or (learner, z).")
+        if z is None:
+            raise ValueError("Provide either (f, g) or z (and optionally a learner).")
+        if learner is None:
+            learner = mlp_learner()
         f = fit_propensities(z, x, dx, learner)
         g = fit_propensities(z, y, dy, learner)
 
@@ -76,9 +86,11 @@ def catci_test(
         raise ValueError(f"statistic must be one of {sorted(STATISTICS)}.")
     stat = STATISTICS[statistic]()
 
-    observed = greedy_search(ts.T_vector, ts.Sigma, dx, dy, x_structure, y_structure, stat)
+    if search is None:
+        search = MergeSearch()
+    observed = search.result(ts.T_vector, ts.Sigma, dx, dy, x_structure, y_structure, stat)
     p = adaptive_pvalue(
         ts.T_vector, ts.Sigma, dx, dy, x_structure, y_structure,
-        n_boot=n_boot, statistic=stat, rng=rng, n_jobs=n_jobs,
+        n_boot=n_boot, statistic=stat, rng=rng, n_jobs=n_jobs, search=search,
     )
     return CatciResult(p_value=p, statistics=np.asarray(observed.values), partitions=observed.partitions)
