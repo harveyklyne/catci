@@ -46,7 +46,10 @@ bipartitions per group). So truncated divisive search needs a tree over the leve
 any unordered categorical (Occupation, Workclass, Race, ...). Options: a published
 taxonomy where one exists (Census occupation major groups; ICD-9 chapters for 4b),
 or an exhaustive top-level split for small `d` — at `d = 14` the first level is 8191
-candidates, which is feasible. Decide before step 2 covers categorical pairs.
+candidates, which is feasible. Partly resolved 2026-09-30: Occupation has a binary
+1990-Census tree (`experiments/taxonomies.py`), but only *binary* trees work, so two
+groups had to be binarised arbitrarily. Removing that restriction is item 5,
+follow-up 3 (n-ary divisive search).
 
 Other open items:
 
@@ -309,12 +312,55 @@ is only between sibling labels. Pooling merge and split@k into one minP gives
 exactly merge, so the gain is **entirely multiplicity**: calibrating over 3 levels
 instead of 13.
 
-Open follow-ups, both optional:
+Open follow-ups (1 and 2 optional; 3 is needed for the primary method on unordered
+variables):
 
   1. **Weighted minP over depths** on the ordinary merge path (more weight on coarse
      levels). It tests the multiplicity explanation directly and needs no divisive
      search; a possible paper remark.
   1. The `alt` union cell was never run; the prediction is that it tracks merge.
+  1. **Divisive search on n-ary trees.** Today `Tree.coarsest_partitions` and
+     `Tree.permitted_splits` raise unless every node is binary, so a taxonomy has to
+     be binarised by hand (two arbitrary choices in the Occupation tree), and wide
+     taxonomies such as ICD-9 chapters (~19 under the root, item 4b) cannot be used.
+     Nothing in the theory needs binary: minP only needs a deterministic
+     `(T, Sigma) -> path`, and every split adds one group, so the path length is
+     `d - 2` per variable whatever the choices.
+
+     *Definition* -- n-ary merging run backwards. A group that is a union of `c >= 2`
+     sibling subtrees (or a whole node with `c` children) may split into any two
+     non-empty unions of them: `2^(c-1) - 1` candidates. The starting partitions are
+     the same bipartitions at the root (`coarsest_partitions` already returns a list).
+     Binary nodes give exactly today's search.
+
+     *Implementation* -- share as much code as possible, **keep the binary-tree
+     speedup**:
+       * The divisive table stores every group as a contiguous label range and gets
+         covariance block sums in O(1) from cumulative sums of `Sigma`
+         (`_as_range`, `SigmaBlocks.cumulative`, `_t_prefixes`). That is what makes
+         `expand()` cheap, and it must stay the path for `Ordinal` and binary `Tree`.
+       * An n-ary split like {child 1, child 3} vs {child 2} is not a range. Generalise
+         the group representation to "a union of ranges" (a sorted tuple of ranges):
+         a binary tree's groups and a contiguous run of siblings are one range, and
+         block sums over several ranges are sums of the same O(1) range-sum terms. One
+         code path, with cost growing only in the number of ranges per group, so
+         binary trees and ordinal keep exactly today's speed, rather than adding a
+         separate slow index-set path.
+       * Generalise `Tree.permitted_splits` / `coarsest_partitions` to enumerate
+         sibling bipartitions, and drop the binary checks. Ordinal is unchanged.
+       * Wide nodes: exhaustive for arity up to about 10--12 (511--2047 candidates);
+         beyond that, a heuristic bipartition (e.g. greedy or spectral on the
+         candidate scores), or an error that names the node, so cost stays bounded.
+         `Saturated` is the limiting case (one node with `d` children) and could reuse
+         this path for small `d`.
+
+     *Tests*: an n-ary tree whose nodes are all binary reproduces today's paths
+     bit-for-bit; the batched search matches the per-draw loop on an n-ary tree;
+     path lengths are constant across draws; the prefix property
+     `SplitSearch(k) == SplitSearch()[:k+1]` holds. Then rebuild the Occupation tree
+     from the 1990 Census classification without the two binarisation choices
+     (technical/sales/admin support and operators/laborers stay 3-way nodes), and
+     re-time against the binary version (`DIVISIVE_COST.md`).
 
 ## 6. Exact p-value criteria instead of approximate chisq — DONE (`0908335`)
 
