@@ -40,7 +40,7 @@ def catci_test(
     g: Optional[np.ndarray] = None,
     learner: Optional[Learner] = None,
     n_boot: int = 100,
-    normalise: bool = True,
+    normalise: bool = False,
     rng: Optional[np.random.Generator] = None,
     statistic: str = "approx",
     n_jobs: int = 1,
@@ -60,6 +60,12 @@ def catci_test(
     CDF of the same ``||T||^2``. They select the same partitions and give the
     same p-values in practice, and ``"exact"`` is ~30x slower -- it is there to
     show that, not for routine use.
+
+    ``normalise=False`` (the default) keeps ``T`` on its natural scale, which is what
+    the adaptive statistic is designed and calibrated for. ``True`` rescales ``T``
+    and ``Sigma`` to unit ``diag(Sigma)`` (per-coordinate studentising, as in the
+    Shah & Peters normalised GCM); it is kept for comparison only. The ``mGCM``
+    comparator studentises internally and should be fed the unnormalised ``T``.
 
     ``search`` picks the direction the label search runs in:
     :class:`~catci.search.MergeSearch` (the default) merges up from singletons,

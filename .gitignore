@@ -17,6 +17,7 @@ dist/
 !MINP.md
 !TEXT.md
 !experiments/ADULT.md
+!experiments/ADULT_SEMISYNTH.md
 !experiments/ankan_textor_code_sources_2026-08.md
 
 # Simulation output (regenerate with experiments/run.py)
