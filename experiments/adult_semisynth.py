@@ -382,7 +382,7 @@ def planted_direction(pop: Population, shape: np.ndarray | str = "u_shape") -> n
 
     Then ``h = P(y|w) * (1 + lam * c * u_w(x) * v_w(y))``, so non-negativity is a
     bound on ``c * u * v`` alone and the scaling below guarantees ``max_lambda >= 1``
-    (only the negative products bind, so it is usually larger -- 1.72 for
+    (only the negative products bind, so it is usually larger -- 2.05 for
     Education x Income given {Age, Sex}). The constraints become conditions on
     the factors:
 
