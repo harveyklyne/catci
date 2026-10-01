@@ -1,9 +1,23 @@
 # A semi-synthetic UCI adult study, after the 401k design
 
 Status: **design settled and verified; the separation result established; the
-full study not yet run.** Worktree `.claude/worktrees/adult-semisynth`, branch
-`worktree-adult-semisynth`, based on `adult-application`. All new code is
-`experiments/adult_semisynth.py`; nothing else in the worktree is modified.
+full study not yet run.**
+
+**Update 2026-09-30.** Integrated with master (minP calibration, MLP learner,
+divisive search) on branch `worktree-adult-integration`:
+
+* `experiments/adult_semisynth.py` is committed. The identities that used to be
+  checked by hand in `scratchpad/verify.py` are now pytest-pinned in
+  `tests/test_adult_semisynth.py`. One correction from that: the planted
+  direction has `max_lambda >= 1`, not `== 1`.
+* The scratchpad scripts below (`verify.py`, `gap.py`, `kindcheck.py`) were lost
+  with the session that wrote them. Their replacement is
+  `experiments/run_semisynth.py`, which runs every method paired (merge, split,
+  split@k, max, euclid, mGCM, chi_sq, A&T typed both ways, stratified χ²), for
+  oracle and fitted propensities on the same data and bootstrap draws.
+* Every number below was produced with the **pre-minP** calibration and should be
+  read as provisional. The "synthetic DGP over-rejects at 0.098" finding in
+  particular predates the minP fix that removed that inflation.
 
 ## The design being ported
 

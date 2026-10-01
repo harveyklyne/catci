@@ -225,7 +225,8 @@ def main():
     ap.add_argument("--truncations", type=int, nargs="+", default=[2, 4])
     ap.add_argument("--no-full-split", dest="full_split", action="store_false")
     ap.add_argument("--reps", type=int, default=200)
-    ap.add_argument("--n-boot", type=int, default=1000)
+    ap.add_argument("--n-boot", type=int, default=10000,
+                    help="bootstrap draws; size checks are exact at any B, power needs 10k")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="")
