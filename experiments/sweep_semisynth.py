@@ -49,7 +49,7 @@ from catci.gcm import form_t_sigma
 from catci.search import MergeSearch, SplitSearch
 from catci.statistic import ApproxChi
 from catci.structure import Saturated
-from run_semisynth import DEPTH0, OUT, Timer, _setup, machine_info, structure_for
+from run_semisynth import DEPTH0, OUT, Timer, _setup, machine_info
 
 
 METHOD_IDS = {name: i for i, name in enumerate(["split", "mergecoarse", "merge", *DEPTH0])}
@@ -57,11 +57,10 @@ METHOD_IDS = {name: i for i, name in enumerate(["split", "mergecoarse", "merge",
 
 def one_rep(task) -> tuple[list[dict], list[dict]]:
     args, lam, rep_id, seed = task
-    pop, delta, kinds, _ = _setup(args)
+    pop, delta, kinds, _, (xs, ys) = _setup(args)
     dx, dy = pop.dx, pop.dy
     data_rng, boot_rng, cal_seed = np.random.default_rng(seed).spawn(3)
     rep = ss.draw(pop, args.n, lam, data_rng, z_names=tuple(args.z), replace=True, delta=delta)
-    xs, ys = structure_for(kinds[0], dx), structure_for(kinds[1], dy)
     if isinstance(xs, Saturated) or isinstance(ys, Saturated):
         raise ValueError("the depth sweep needs Ordinal/Tree on both sides (SplitSearch)")
 
@@ -145,8 +144,9 @@ def main():
     args.z = args.z or list(args.w)
     args.n_boots = sorted(args.n_boots)
 
-    pop, delta, kinds, _ = _setup(args)
-    print(f"{args.x} ({kinds[0]}, dx={pop.dx}) x {args.y} ({kinds[1]}, dy={pop.dy}) "
+    pop, delta, kinds, _, (xs, ys) = _setup(args)
+    print(f"{args.x} ({kinds[0]}, dx={pop.dx}, {type(xs).__name__}) x "
+          f"{args.y} ({kinds[1]}, dy={pop.dy}, {type(ys).__name__}) "
           f"| Z={args.z}, direction={args.direction}, "
           f"max_lambda={ss.max_lambda(pop, delta):.3f}, ncp/n={pop.ncp_per_n(delta):.4g}")
 

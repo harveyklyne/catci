@@ -52,6 +52,7 @@ import adult
 import adult_semisynth as ss
 import ankan_textor as at
 import methods
+import taxonomies
 from catci.bootstrap import bootstrap_T
 from catci.calibrate import double_bootstrap_pvalue
 from catci.gcm import form_t_sigma
@@ -106,7 +107,11 @@ DEPTH0 = {"max": max_abs, "euclid": euclid, "mGCM": mgcm}
 
 
 def structure_for(kind: str, d: int):
-    """Ordinal variables get ``Ordinal``; unordered ones ``Saturated`` (merge only)."""
+    """Ordinal variables get ``Ordinal``; unordered ones ``Saturated`` (merge only).
+
+    :func:`_setup` overrides this with a :mod:`taxonomies` tree for an unordered
+    variable that has one, which is what lets the divisive search run on it.
+    """
     if kind == "ordinal" or d <= 2:
         return Ordinal()
     return Saturated()
@@ -176,12 +181,11 @@ def fitted_propensities(learner: str, rep: ss.Replicate, z_levels, dx, dy):
 
 def one_rep(task) -> list[dict]:
     args, lam, rep_id, seed = task
-    pop, delta, kinds, z_levels = _setup(args)
+    pop, delta, kinds, z_levels, (xs, ys) = _setup(args)
     dx, dy = pop.dx, pop.dy
     data_rng, boot_seed, method_seed = np.random.default_rng(seed).spawn(3)
     rep = ss.draw(pop, args.n, lam, data_rng, z_names=tuple(args.z), replace=True, delta=delta)
     zcell = np.unique(rep.z, axis=0, return_inverse=True)[1].ravel()
-    xs, ys = structure_for(kinds[0], dx), structure_for(kinds[1], dy)
     stat = ApproxChi()
 
     rows = []
@@ -244,19 +248,31 @@ _CACHE: dict = {}
 
 
 def _setup(args):
-    """Population, direction, kinds and Z level counts -- built once per worker."""
-    key = (args.x, args.y, tuple(args.w), args.pool, args.n, args.direction)
+    """Population, direction, kinds, Z level counts and structures -- once per worker.
+
+    An unordered variable with a :mod:`taxonomies` entry is recoded to the tree's
+    leaf order and searched under that tree (unless ``--no-taxonomy``); other
+    unordered variables get ``Saturated``, ordinal ones ``Ordinal``.
+    """
+    taxonomy = getattr(args, "taxonomy", True)
+    key = (args.x, args.y, tuple(args.w), args.pool, args.n, args.direction, taxonomy)
     if key not in _CACHE:
         data = adult.load()
         if args.pool:
             for name in (args.x, args.y):
                 if data.kind(name) == "categorical":
                     data = ss.pool_rare(data, name, args.pool, args.n)
+        trees = {}
+        for name in (args.x, args.y):
+            if taxonomy and data.kind(name) == "categorical" and name in taxonomies.TAXONOMIES:
+                data, trees[name] = taxonomies.apply_taxonomy(data, name)
         pop = ss.build_population(data, args.x, args.y, args.w)
         delta = pop.delta_real() if args.direction == "real" else ss.planted_direction(pop)
         kinds = (data.kind(args.x), data.kind(args.y))
         z_levels = [data.n_levels(name) for name in args.z]
-        _CACHE[key] = (pop, delta, kinds, z_levels)
+        structures = tuple(trees.get(name) or structure_for(kind, d) for name, kind, d in
+                           ((args.x, kinds[0], pop.dx), (args.y, kinds[1], pop.dy)))
+        _CACHE[key] = (pop, delta, kinds, z_levels, structures)
     return _CACHE[key]
 
 
@@ -274,6 +290,8 @@ def main():
     ap.add_argument("--pool", type=float, default=5.0,
                     help="pool categorical levels with expected count < this (0 = off)")
     ap.add_argument("--learners", nargs="+", default=["oracle"])
+    ap.add_argument("--no-taxonomy", dest="taxonomy", action="store_false",
+                    help="search unordered variables as Saturated even if a tree exists")
     ap.add_argument("--truncations", type=int, nargs="+", default=[2, 4])
     ap.add_argument("--no-full-split", dest="full_split", action="store_false")
     ap.add_argument("--reps", type=int, default=200)
@@ -285,8 +303,9 @@ def main():
     args = ap.parse_args()
     args.z = args.z or list(args.w)
 
-    pop, delta, kinds, _ = _setup(args)
-    print(f"{args.x} ({kinds[0]}, dx={pop.dx}) x {args.y} ({kinds[1]}, dy={pop.dy}) "
+    pop, delta, kinds, _, (xs, ys) = _setup(args)
+    print(f"{args.x} ({kinds[0]}, dx={pop.dx}, {type(xs).__name__}) x "
+          f"{args.y} ({kinds[1]}, dy={pop.dy}, {type(ys).__name__}) "
           f"| Z={args.z}, W={args.w}, direction={args.direction}, "
           f"max_lambda={ss.max_lambda(pop, delta):.3f}, ncp/n={pop.ncp_per_n(delta):.4g}")
 
