@@ -158,3 +158,149 @@ Launch commands are in the session's queue scripts and are reproduced by:
     python sweep_semisynth.py --x Occupation --y Income --n 1000 --direction real --lams 0.2 0.3 0.4 0.5 --reps 300 --time-reps 0
     python sweep_semisynth.py --x Occupation --y Income --n 1000 --direction planted --lams 0.6 0.9 1.25 1.55 --reps 300 --time-reps 0
     python run_semisynth.py --x Education --y Income --lams 0 --reps 500 --n-boot 10000 --learners oracle mlp --truncations 1 2 4
+
+---
+
+## Background findings (from the retired PLAN.md)
+
+All measured at an exact null, oracle propensities, depth-0 criteria,
+`normalise=False` unless stated. These explain the pre-minP size anomalies in
+the pilot tables above.
+
+### Finding 1 -- `rank(Sigma) = (dx-1)(dy-1)` is structural and harmless
+
+`Sigma` is always rank-deficient (e.g. rank 3 of 8 at `dx=4, dy=2`, every
+replicate). Reason: `sum_k (1{X=k} - f_k) = 0` and `sum_l (1{Y=l} - g_l) = 0`
+hold in every row, so `prod_mat` has exactly `dx+dy-1` linear dependencies among
+its columns. They hold for the row mean too, so the observed `T` satisfies the
+same relations as the bootstrap draws. Measured leakage of `||T||^2` outside the
+retained span, `1 - ||Q_r' T||^2 / ||T||^2`: **0.0000 in every cell of every
+run**. `matrix_sqrt` discards exactly the structurally null directions, which `T`
+does not occupy either. Leakage could only be nonzero for non-structural
+degeneracy (an estimated propensity that collapsed a cell, a `Z`-stratum with no
+variation); that case is unobserved. Worth reporting in the appendix per test
+(one QR) alongside `rank(Sigma)` and `rank(Sigma)/n`, as a check that passes and
+an alarm when it does not. A min-eigenvalue "necessity" claim would need a
+construction with non-structural degeneracy; it does not exist yet.
+
+### Finding 2 -- mGCM's studentisation over-rejects; excess scales with rank/n
+
+Exact null, no rare cells, `dx = dy = d`, 800 reps, SE 0.008:
+
+| d | n | rank/n | euclid | max | **mGCM** |
+|---:|---:|---:|---:|---:|---:|
+| 4 | 500 | 0.018 | 0.046 | 0.037 | 0.059 |
+| 4 | 1000 | 0.009 | 0.066 | 0.059 | 0.059 |
+| 4 | 5000 | 0.002 | 0.051 | 0.049 | 0.055 |
+| 8 | 500 | 0.098 | 0.037 | 0.039 | **0.389** |
+| 8 | 1000 | 0.049 | 0.054 | 0.045 | **0.215** |
+| 8 | 5000 | 0.010 | 0.048 | 0.051 | 0.071 |
+| 12 | 500 | 0.242 | 0.034 | 0.025 | **0.975** |
+| 12 | 1000 | 0.121 | 0.040 | 0.039 | **0.790** |
+| 12 | 5000 | 0.024 | 0.046 | 0.039 | 0.191 |
+
+euclid and max are nominal everywhere. All three share `form_t_sigma`,
+`matrix_sqrt`, `bootstrap_T` and the p-value code, so the fault is isolated to
+the one thing mGCM does that they do not: divide by `sqrt(diag(Sigma))`.
+
+Mechanism: `mgcm = max_j |T_j| / sqrt(Sigma_jj)`. Bootstrap draws have covariance
+exactly `Sigma_hat`, so `T*_j / sqrt(Sigma_hat_jj)` is exactly standardised. The
+observed `T_j` has variance `Sigma_true_jj != Sigma_hat_jj`, a ratio fluctuating
+`O(1/sqrt(n))` per coordinate; the max over `p` coordinates then selects the one
+where `Sigma_hat` most underestimated, a selection effect the draws cannot
+reproduce. It grows with the number of coordinates per observation (`rank/n`).
+Elimination argument: at depth 0 with a scalar criterion the p-value is exactly
+uniform for any fixed criterion function if observed `T` and draws share a law,
+so ApproxChi, Box, greedy search and the double bootstrap cannot be responsible;
+only the law of `T` vs `N(0, Sigma_hat)` can. The repo's own `d=8, n=1000`
+synthetic null (0.166) matches d=8, n=1000 here (0.215). A necessity claim is
+available on a rate: size 0.055 -> 0.215 -> 0.975 as `(d-1)^2/n` goes
+0.01 -> 0.05 -> 0.24.
+
+Remedies for mGCM: drop the studentisation, give each draw its own variance
+estimate (studentised bootstrap), or retire it as a comparator with the reason
+documented. Any published power number involving mGCM is uninterpretable until
+then.
+
+Why the test suite missed it: `test_calibration_under_gaussian` feeds
+`T ~ N(0, Sigma)` with `Sigma` known and fixed, so it tests the machinery given a
+correct reference law and cannot see that the real `Sigma` is estimated from the
+same rows. Regression tests must be fed from data.
+
+### Finding 3 -- rare cells alone do not break size
+
+Varying the rare level's expected count over {0.5, 1, 2, 5, 20, 100} at
+`n = 1000`, `dx=4, dy=2`: euclid 0.043-0.060, max 0.037-0.061, mGCM 0.037-0.056,
+leakage 0.0000, under both `normalise` settings. So the pooling effect on
+Occupation x Income (0.095-0.128 unpooled -> 0.052-0.068 pooled) is likelier a
+`rank/n` effect (`dx` 14 -> ~8) than a rare-cell one; pooling's real payoff is
+controlling `rank/n`. Unconfirmed. Related unexplained cell: mGCM 0.060 at
+n = 1000 -> 0.128 at n = 5000 on Occupation x Income contradicts "size improves
+with n at fixed d"; `pool_rare` takes `n`, so `dx` may differ between the rows;
+check before treating as a second phenomenon.
+
+### The old double-bootstrap bug
+
+Observed value ranked against `B` values excluding itself, bootstrap values
+against `B` including themselves, so bootstrap quantiles were scaled by
+`c = B/(B+1)` and the max over `M` depths gave `size = 1 - 0.95 c^M` (matched the
+measurements to three decimals). Fixed by the minP rewrite; the arithmetic and
+before/after table are already in `MINP.md`.
+
+### Idea: uncentered multiplier bootstrap (not adopted; does not fix mGCM)
+
+`T* = prod_mat' eps / sqrt(n)`, `eps` iid mean-zero unit-variance. Observed `T`
+and every draw are the same linear functional of the same `n` rows with
+different weights, so both lie in the row space of `prod_mat` by construction (verified to 1e-16 over
+4000 draws), whereas Gaussian draws sit in a smaller subspace that a
+deliberately degenerate `T` leaks out of by 1.5%. Do not centre: centred draws
+lie in the span of centred rows, which reintroduces the mismatch. Uncentered has
+conditional covariance `prod_mat' prod_mat / n`, right under the null and
+slightly conservative under alternatives (`~ T T'/n` extra). Cost: thread
+`prod_mat` through `TSigma`/`bootstrap_T` (`n*dx*dy` floats, 7.7 MB at
+n = 30,162, dx*dy = 32). It does not fix mGCM, whose draws share the same
+`Sigma_hat_jj`. Adopt only for robustness/skewness.
+
+### Adult deep-dive design (inform the method; run once size is settled)
+
+Why Adult (before Diabetes-130, which stays first for the paper because it has an
+external outcome-blind partition, ICD-9 chapters in CCS-285 in phecodes): no data
+engineering, an exact-null twin exists (`adult_semisynth.py`), and a near-oracle
+nuisance arm is free (`Z = {Age, Sex}`: 14 strata, min occupancy 127 over 30,162
+rows, so full-file stratum propensities proxy the truth on a subsample).
+
+Change to the existing setup (`ADULT.md`): at n = 30,162 all 36 pairs reject
+(largest p 1.1e-12), so rejection counts carry no information.
+- **Subsample:** B independent draws of `n in {500, 1000, 2000}` without
+  replacement; report a rejection rate over subsamples per pair.
+- **Drop ill-conditioned tests, do not average over them:** 20 of 72 tests are
+  ill-conditioned at n = 1000, all NativeCountry pairs. Compare on the 26
+  well-conditioned pairs and report the excluded set.
+
+Methods: `mGCM`/`euclid`/`max` (depth 0) -> `Tree.binary` -> `Saturated` (~10x
+cost at dx = 13) -> `Ordinal` on ordinal pairs; against Ankan & Textor Q1/Q2/Q3
+under both estimators (GLM, RFT) and both typings, plus `chi_sq` and
+`multinomial`. Nuisance arm A: empirical-stratum propensities from the full file
+(primary); arm B: `xgboost_learner` on the subsample (needs honest tuning; label
+untuned).
+
+Staging: A pilot, 6 Fig-1b pairs, B = 50, n = 1000, arm A, all methods (~30 min,
+8 cores). B main, 26 pairs x B = 200 x n in {1000, 2000} (Saturated 7.5 s/rep at
+`n_boot = 100`, Tree 0.8 s; ~22 CPU-hours, ~5.5 h on 8 cores). C learned
+nuisances and partition analysis.
+
+Record per test beyond the p-value: criterion path and selected partition; number
+of groups at the criterion peak (the planted-2-group result above peaked at 7-9
+groups, never 2, so if it reproduces the peak is not a usable selector and
+"interpretable coarsening" needs a different stopping rule); merge-selection
+frequency across subsamples (consensus partition with stability); seconds per
+test; `rank` and `cond`.
+
+Four questions: (1) does merging buy rejections over depth 0 (if mGCM and Tree
+tie, the search is not justified)? (2) Tree vs Saturated: does 10x cost buy
+rejections (if not, Tree.binary is default and divisive search loses urgency; if
+yes, it becomes the priority since it truncates the fine end at d = 13-16)?
+(3) where does catci beat A&T, and does the typing blind-spot story (ordinal Q1
+df = 1 vs categorical Q2 df = 15) appear on real data (expect a loss to Q1 on
+monotone pairs like Education x Income, a win on non-monotone)? (4) is the
+criterion peak a usable partition selector?

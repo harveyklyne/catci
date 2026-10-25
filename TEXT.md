@@ -24,15 +24,15 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
    does. Either restore an `nfolds` option, or replace Lemma 4 with Donsker /
    algorithmic-stability conditions.
 2. **Calibration rewrite (T1).** Algorithm 2 and Theorem 2 still describe the old
-   calibration. The only draft of the minP replacement is `MINP.md`, now tracked
+   calibration. The only draft of the minP replacement is `experiments/MINP.md`, now tracked
    (it was nearly lost).
 3. **Every figure and size/power claim predates the minP fix (T2).** The only
-   minP-era numbers are in the study docs (SEARCH*.md, DIVISIVE.md, README,
-   NOTES-mlp-learner.md); there is no size grid regenerating Fig 2.
+   minP-era numbers are in the study docs (SEARCH_RESULTS.md, experiments/DIVISIVE.md, README,
+   experiments/MLP_LEARNER.md); there is no size grid regenerating Fig 2.
 
 ## a) Code TODOs
 
-### Not in TODO.md and not in any worktree
+### Not in TODO.md
 
 - **C1. No cross-fitting.** See above.
 - **C2. The permuted-label figures (Figs 5-6, line 475) can't be regenerated.**
@@ -56,7 +56,7 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
   config** (`config.py:59`, `run_size.py:29`).
 - **C7. `catci_test` defaults to `normalise=True`** (`api.py:43`).
   - The paper's remark at lines 236-238 says normalising hurts, every experiment
-    config uses False (`config.py:40`), and PLAN.md finds True worse (greedy
+    config uses False (`config.py:40`), and `experiments/SEMISYNTH_RESULTS.md` finds True worse (greedy
     0.095 → 0.128).
   - The theory does not cover normalising. Rescaling by `D^{-1/2}` moves the
     kernel from `𝒦` to `D^{1/2}𝒦`: Lemma 6 (917) survives, but Lemma 7's
@@ -66,7 +66,7 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
 - **C8. Search limits are not implemented.** Line 255 mentions "fixing a maximum
   group size or a total number of merges", and Algorithm 4 takes a "search depth
   `L`" (626). The merge search always runs to 2×2. Only the divisive search can
-  be truncated (`SplitSearch(max_levels)`). DIVISIVE.md finds truncation's gain is
+  be truncated (`SplitSearch(max_levels)`). experiments/DIVISIVE.md finds truncation's gain is
   entirely the smaller minP multiplicity penalty, and suggests testing a weighted
   minP over the ordinary merge path instead.
 - **C9. The abstract's Bonferroni baseline is not the one implemented.** Line 109
@@ -74,7 +74,7 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
   of granularities such as each tree depth. `*_bonf` (`calibrate.py:101`) applies
   Bonferroni over the *adaptive* path.
 - **C10. `bonferroni_pvalue` does not share tie-breaks with minP**
-  (`calibrate.py:101-119`). The docstring, and MINP.md's pathwise-dominance proof,
+  (`calibrate.py:101-119`). The docstring, and experiments/MINP.md's pathwise-dominance proof,
   say minP is never larger on the same input. The proof needs both to use the same
   stage-1 ranks, but each call draws fresh uniforms from `rng`. Either share the
   ranks or weaken the claim; check what `tests/test_calibrate.py` actually asserts.
@@ -88,13 +88,13 @@ Line numbers are `main.tex` lines. Lemma/theorem numbers use the shared counter
     lengths" error (`search.py:525`).
   - The Adult work found p-values being returned at cond ≈ 1e21.
   - Cheap fixes: a rank warning, reporting `‖T‖²` leakage outside `range(Σ̂)` and
-    `rank/n` (PLAN.md "leakage diagnostic"), and a clear error for zero-trace
+    `rank/n` (`experiments/SEMISYNTH_RESULTS.md` "leakage diagnostic"), and a clear error for zero-trace
     merges.
 - **C13. Chi-square degrees of freedom.** Paper eq. (6), line 262: `χ²_{rank(σ)}`.
   Code `methods.py:140`: fixed `(dx−1)(dy−1)`. They agree only at generic rank.
 - **C14. Resolved on master.** Oracle propensities are now `run.py --learner
   oracle`. (Was: oracle experiments existed only as an API path.)
-- **C15. The multiplier bootstrap** (PLAN.md: uncentred `T* = prod_matᵀε/√n`) is
+- **C15. The multiplier bootstrap** (experiments/SEMISYNTH_RESULTS.md: uncentred `T* = prod_matᵀε/√n`) is
   unimplemented. It would put the observed `T` and the draws in the same row space
   by construction.
 - **C16. Draft asides with nothing behind them in the code:**
@@ -114,14 +114,14 @@ All of these are now on master; the open part is mostly the write-up (T18).
 
 | Text | TODO | Status on master |
 |---|---|---|
-| Sample splitting (line 138) | 7b | `<search>_split` methods; loses 8-35 points against greedy (SEARCH_COMPARISON.md) |
+| Sample splitting (line 138) | 7b | `<search>_split` methods; loses 8-35 points against greedy (experiments/SEARCH_RESULTS.md) |
 | Random search / sanity check | 4.1, 7a | `<search>_random` methods; greedy beats random by 7-25 points where the structure leaves the final partition free, 1-2 under a binary tree |
-| Wider search | 7c | `greedy_beam5`; no gain even on the greedy trap (SEARCH.md) |
+| Wider search | 7c | `greedy_beam5`; no gain even on the greedy trap (experiments/SEARCH_RESULTS.md) |
 | Motivating example `d = 30 × 10` (131); "fix d = 8" (405) | 1 | CV tuner (`tuning.py`, `experiments/tune.py`), separate dx/dy, d-axis pilot up to dx = 256 (README). Learners are worse than uniform at `d ≥ 64`, so large d uses oracle propensities |
 | Pre-tuning (615-617) | 1 | CV tuner on master; see T16 |
-| Deep / hierarchical classifier (115) | 2 | MLP learner merged and now the **default**; every experiment runs both MLP and xgboost (NOTES-mlp-learner.md) |
+| Deep / hierarchical classifier (115) | 2 | MLP learner merged and now the **default**; every experiment runs both MLP and xgboost (experiments/MLP_LEARNER.md) |
 | Temporal / taxonomy structures (112) | 3 | `Cyclic`, `Tree.from_parents` |
-| Divisive search | 5 | `SplitSearch` with truncation; d = 8 and d = 16 answered, union of paths gives no gain (DIVISIVE.md) |
+| Divisive search | 5 | `SplitSearch` with truncation; d = 8 and d = 16 answered, union of paths gives no gain (experiments/DIVISIVE.md) |
 | Exact CDF criterion | 6 | `ExactChi`; paired power study never finished |
 | `n_boot` default of 100 vs 1000 in the configs | 0b / 8 | Still open: `api.py:42` defaults to 100 |
 
@@ -131,7 +131,7 @@ All of these are now on master; the open part is mostly the write-up (T18).
 
 - **T1. Replace Algorithm 2 (306-322), Algorithm 5 (693-713), Theorem 2 (542-548)
   and its proof (1159-1219, Lemmas 13-14 at 1221-1320) with minP.** Draft in
-  `MINP.md`.
+  `experiments/MINP.md`.
   - Code (`calibrate.py:44-98`): pool `B+1` exchangeable paths, leave-one-out ranks
     with random tie-breaks, `P_min` per path, the same rule again at stage 2.
     Exactly uniform on the `1/(B+1)` grid at finite `B`.
@@ -147,7 +147,7 @@ All of these are now on master; the open part is mostly the write-up (T18).
     call Bonferroni "overly conservative"); that `B` bounds power; and a footnote
     on random ties (conservative ties give size 0 at `L ≥ 13, B = 100`).
   - Theorem 1 (388) says `lim_{n,B→∞}`; with minP, `B` need not grow.
-  - Notation: `M → S`, `F → p`, `G → P_min`. The five citations in MINP.md are from
+  - Notation: `M → S`, `F → p`, `G → P_min`. The five citations in experiments/MINP.md are from
     memory and need checking.
 - **T2. All size and power claims need regenerating.** "Correctly calibrated in
   all settings" (line 437) and "controls size in finite-sample settings" (494)
@@ -166,7 +166,7 @@ All of these are now on master; the open part is mostly the write-up (T18).
 - **T5. "Rows and columns of each d sum to one"** (454) should say *zero*
   (`dgp.py:141`).
 - **T6. mGCM.** Replace "we were surprised that the mGCM also failed" (437) with
-  the diagnosis (TODO 0a, PLAN Finding 2): oracle-propensity size 0.215 at
+  the diagnosis (TODO "Paper: 0a", SEMISYNTH_RESULTS Finding 2): oracle-propensity size 0.215 at
   `d = 8, n = 1000` and 0.975 at `d = 12, n = 500`, scaling with `rank(Σ)/n`.
   Studentising by `diag(Σ̂)` lets the max pick the coordinate whose variance was
   most underestimated, which the draws cannot reproduce. Consider a remark that
@@ -246,24 +246,23 @@ All of these are now on master; the open part is mostly the write-up (T18).
 - **T18. Results on master ready to become paper sentences** (minP-era unless
   noted; the source docs have the current numbers):
   - Beam does not help, even on a setting built to trap greedy, so "greedy
-    suffices because the calibration charges for search breadth" (SEARCH.md).
+    suffices because the calibration charges for search breadth" (experiments/SEARCH_RESULTS.md).
   - Greedy beats random search by 7-25 points where the structure leaves the
     final partition free; under a binary tree the structure, not the search,
     supplies the adaptivity. Sample splitting loses 8-35 points, often below
-    plain χ² (SEARCH_COMPARISON.md, which flags its numbers as exploratory, with
+    plain χ² (experiments/SEARCH_RESULTS.md, which flags its numbers as exploratory, with
     a checklist before they go in the paper).
   - Divisive search: the full split matches merging. Truncated splitting helps
     only when the signal is coarse, and that gain is entirely multiplicity:
     calibrating over 3 levels instead of 13. Union of merge and split paths gives
-    no gain (DIVISIVE.md). Suggests a weighted-minP remark or experiment.
+    no gain (experiments/DIVISIVE.md). Suggests a weighted-minP remark or experiment.
   - d-axis pilot (oracle propensities, up to dx = 256): ordinal power decays
     gently while euclid and max collapse and chi_sq/mGCM size blows up; cost is
     roughly cubic in dx (README).
-  - MLP vs xgboost: learner choice doesn't affect size (NOTES-mlp-learner.md).
+  - MLP vs xgboost: learner choice doesn't affect size (experiments/MLP_LEARNER.md).
   - Adult and the semi-synthetic study: 5 of 6 Fig 1b pairs flip to rejection; a
-    planted direction A&T cannot see (A&T 0.060 vs catci 1.000). **Pre-minP, still
-    on the unmerged `adult-application` / `worktree-adult-semisynth` branches;
-    needs re-running.**
+    planted direction A&T cannot see (A&T 0.060 vs catci 1.000). Pre-minP numbers; post-minP
+    results are in `experiments/SEMISYNTH_RESULTS.md`.
 
 ### Abstract and discussion
 
@@ -275,13 +274,3 @@ All of these are now on master; the open part is mostly the write-up (T18).
   parametric bootstrap sample", which is still true under minP but worth
   rephrasing.
 - **T22.** Add the multi-label limitation (TODO 9) as one line.
-
-## Housekeeping
-
-- TODO.md (untracked) still lists items 1, 2, 3, 5 and 7 without a DONE marker,
-  and item 6 points to the deleted `exact-pvalue-criteria` worktree.
-- Stale branches: `refactor` (fully merged); remote copies of the now-merged
-  research branches (`origin/worktree-{alt-search,divisive-search,
-  divisive-search-vec,mlp-learner,structures,tuner-d-axis}`).
-- Still unmerged: `adult-application` and `worktree-adult-semisynth` (TODO 4a,
-  pre-minP, with an uncommitted `experiments/adult_semisynth.py`).
