@@ -139,6 +139,7 @@ def greedy_search_paths(
     *,
     chunk_bytes: int = DEFAULT_CHUNK_BYTES,
     n_jobs: int = 1,
+    max_levels: int | None = None,
 ) -> np.ndarray:
     """Statistic paths of the greedy search for every column of ``T``.
 
@@ -150,6 +151,9 @@ def greedy_search_paths(
         merged ``Sigma``, ``8 (dx dy)^2`` bytes.
     n_jobs : threads over chunks (``-1`` = all cores). numpy releases the GIL in
         the heavy kernels, so this helps most once ``dx*dy`` is in the hundreds.
+    max_levels : stop after this many merges, so the path has at most
+        ``max_levels + 1`` entries (finest partition first) and the later steps are
+        never computed.
 
     Returns
     -------
@@ -169,7 +173,7 @@ def greedy_search_paths(
     slices = [slice(s, min(s + chunk, B)) for s in range(0, B, chunk)]
 
     def run(sl):
-        return _run_chunk(shared, T[:, sl], x_structure, y_structure)[0]
+        return _run_chunk(shared, T[:, sl], x_structure, y_structure, max_levels=max_levels)[0]
 
     if n_jobs == 1 or len(slices) == 1:
         outs = [run(sl) for sl in slices]
@@ -531,8 +535,12 @@ def _candidate_values(st: _State, structures):
 
 
 def _run_chunk(shared: _Shared, T: np.ndarray, x_structure: Structure, y_structure: Structure,
-               compact_threshold: float = COMPACT_THRESHOLD, sparse=None):
+               compact_threshold: float = COMPACT_THRESHOLD, sparse=None,
+               max_levels: int | None = None):
     """Search every column of ``T``; returns ``(values (L+1, n), merges)``.
+
+    ``max_levels`` caps the number of merges taken (``None``: down to two groups per
+    dimension); the later steps are never computed.
 
     ``merges`` is filled only when ``n == 1`` (for :func:`greedy_search`): per
     level, ``(dim, i, j)`` with ``dim`` 0/1 and ``i < j`` the 1-based partition
@@ -549,8 +557,9 @@ def _run_chunk(shared: _Shared, T: np.ndarray, x_structure: Structure, y_structu
 
     values = [approx_chi_array(st.normsq, st.tr, st.tr2)]
     merges = []
+    level = 0
     with np.errstate(divide="ignore", invalid="ignore"):
-        while True:
+        while max_levels is None or level < max_levels:
             V, parts, dims, offset = _candidate_values(st, structures)
             has = np.isfinite(V).any(axis=1)
             if not has.any():
@@ -559,6 +568,7 @@ def _run_chunk(shared: _Shared, T: np.ndarray, x_structure: Structure, y_structu
                 raise ValueError("Search paths have different lengths across draws.")
 
             best = np.argmax(V, axis=1)  # first max = R's which.max in loop order
+            level += 1
             values.append(V[r, best])
             is_y = best >= offset
             for dim in (0, 1):
@@ -1431,16 +1441,30 @@ def divisive_search(
 
 
 class MergeSearch:
-    """Agglomerative direction: :func:`greedy_search`. The paper's Algorithm 1."""
+    """Agglomerative direction: :func:`greedy_search`. The paper's Algorithm 1.
+
+    ``max_levels = k`` stops after ``k`` merges, so the path is the finest ``k + 1``
+    partitions and the later steps are never computed; ``None`` merges down to two
+    groups per dimension. (Split truncation keeps the *coarsest* ``k + 1``; the two
+    ends of the lattice are different objects.)
+    """
+
+    def __init__(self, max_levels: int | None = None):
+        self.max_levels = max_levels
 
     def result(self, T_vector, Sigma, dx, dy, x_structure, y_structure, statistic=None):
         """The observed search, with the partitions it visited."""
+        if self.max_levels is not None:
+            raise NotImplementedError("result() of a truncated MergeSearch is not implemented.")
         return greedy_search(T_vector, Sigma, dx, dy, x_structure, y_structure, statistic)
 
     def paths(self, T, Sigma, dx, dy, x_structure, y_structure, statistic=None, n_jobs=1):
         """``(L + 1, B)`` statistic paths for every column of ``T``, one batch."""
         if statistic is None or isinstance(statistic, ApproxChi):
-            return greedy_search_paths(T, Sigma, dx, dy, x_structure, y_structure, n_jobs=n_jobs)
+            return greedy_search_paths(T, Sigma, dx, dy, x_structure, y_structure, n_jobs=n_jobs,
+                                       max_levels=self.max_levels)
+        if self.max_levels is not None:
+            raise NotImplementedError("A truncated MergeSearch needs the default statistic.")
         return np.column_stack([
             _greedy_search_loop(T[:, b], Sigma, dx, dy, x_structure, y_structure, statistic).values
             for b in range(T.shape[1])
