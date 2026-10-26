@@ -1,6 +1,6 @@
 # Random-search baselines and depth-truncated merge: implementation plan
 
-Status: **plan, revised after review (Section 8); awaiting go-ahead.** Branch `worktree-random-search-baselines`.
+Status: **implemented and tested (Section 9); experiments not yet run.** Branch `worktree-random-search-baselines`.
 Motivating question: does the *directed* choice of each merge/split buy power, or
 does the benefit come from the multiplicity budget (the depth) and the adaptive
 family alone? A baseline that spends the same depth budget on data-independent
@@ -319,3 +319,41 @@ instance per learner (2.2c); separate tie-break rng for new methods (Section 3);
 with the cost estimate (2.2b); `result`/export/path-length/timing nits (2.2d, 2.3,
 Section 3); sorted-label partition keys (2.2b); extra tests 16-22 (Section 4);
 size-judgement, pairing, binary-tree and matched-depth wording (Section 6).
+
+## 9. Implementation status (2026-10-25)
+
+Done: Sections 2 and 3 and tests 1-22 except those noted below. Full suite:
+505 passed (`PYTHONPATH=src python -m pytest tests`).
+
+* `src/catci/search.py`: `MergeSearch(max_levels)`; `src/catci/randomsearch.py`:
+  generator, reference scorer, `RandomMergeSearch`, `RandomSplitSearch`.
+* `experiments/`: `sweep_semisynth.py`, `run_semisynth.py`, `gauss_check.py`,
+  `report_semisynth.py`, `SEMISYNTH_RESULTS.md` annotations. Existing methods'
+  p-values are bit-for-bit unchanged (golden tests in `tests/test_semisynth_harness.py`,
+  constants captured from the code at `6dca08e`).
+* Gaussian arm of `gauss_check.py` (Education x Income, n = 1000, 200 reps, B = 300,
+  SE ~0.015): all new arms nominal (0.025-0.055).
+
+**Scorer profile (reference scorer only; no fast module was written).** CPU seconds,
+one search on `B = 10000` draws, Ordinal x Ordinal, full depth:
+
+| dx x dy | p | merge | rmerge | rsplit |
+|---|---:|---:|---:|---:|
+| 16 x 2 | 32 | 1.2 | 2.6 | 2.8 |
+| 4 x 16 | 64 | 2.6 | 8.7 | 7.7 |
+| 16 x 8 | 128 | 7.4 | 41 | 42 |
+| 14 x 14 | 196 | 15.5 | 540 | 176 |
+
+(28k distinct partitions per replicate at 16 x 2, as the review estimated.) For the
+planned pairs (`p <= 64`) the dense reference is adequate (<= 9 s per replicate at
+`B = 10000`, ~1 s at `B = 1000`; power barely moves past `B = 1000`). It is not
+adequate for `p >= 128`; the range-route scorer of 2.2(b) is deferred until a
+random baseline is wanted there, and must then agree with `score_paths` to 1e-10.
+
+Deviations from the plan: none in design. `rsplit@k`/`rmerge@k` use `--truncations`
+in `run_semisynth.py` (`--no-random` disables the block); `gauss_check.py` also
+covers the random arms. Not done: a `catci_test`/API route to the random searches
+(`result` raises `NotImplementedError` by design).
+
+Next: the runs of Section 6, starting with the null and power sweeps on
+Education x Income (same `--lams --reps --seed` as the existing directed rows, to pair).

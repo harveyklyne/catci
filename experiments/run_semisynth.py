@@ -20,6 +20,11 @@ Methods (all on the same ``T, Sigma``, ``normalise=False``):
 * ``merge``            -- :class:`~catci.search.MergeSearch` (Algorithm 1)
 * ``split``, ``split@k`` -- :class:`~catci.search.SplitSearch`, full / truncated at
   ``k`` levels. Needs ``Ordinal`` or ``Tree`` on both sides; skipped for ``Saturated``.
+* ``merge@k``          -- ``MergeSearch(k)``, the first ``k`` merges from the finest partition.
+* ``rsplit@k``, ``rmerge@k`` -- the random baselines (``RANDOM_SEARCH.md``): ``k``
+  uniformly random splits / merges, same depth budget, data-independent choices.
+  Their calibration has its own tie-break stream, so adding them (or ``--no-random``)
+  leaves every other method's p-value unchanged.
 * ``max``, ``euclid``, ``mGCM`` -- depth-0 comparators, minP-calibrated (``L = 1``).
   ``mGCM`` studentises internally (Shah & Peters' normalised max).
 * ``chi_sq``           -- pseudo-inverse chi-square on ``(dx-1)(dy-1)`` df.
@@ -57,6 +62,7 @@ from catci.bootstrap import bootstrap_T
 from catci.calibrate import double_bootstrap_pvalue
 from catci.gcm import form_t_sigma
 from catci.learners import fit_propensities, mlp_learner
+from catci.randomsearch import RandomMergeSearch, RandomSplitSearch
 from catci.search import MergeSearch, SplitSearch
 from catci.statistic import ApproxChi, euclid, max_abs, mgcm
 from catci.structure import Ordinal, Saturated
@@ -186,7 +192,9 @@ def one_rep(task) -> list[dict]:
     # SeedSequence children, not Generators: default_rng(generator) returns that same
     # generator, so a per-learner default_rng(...) would continue one stream rather
     # than replay it, and the learners would not share their draws.
-    data_ss, boot_ss, method_ss = seed.spawn(3)
+    # (The fourth child, for the random baselines, leaves the first three unchanged.)
+    data_ss, boot_ss, method_ss, random_ss = seed.spawn(4)
+    rsplit_ss, rmerge_ss, rtie_ss = random_ss.spawn(3)
     rep = ss.draw(pop, args.n, lam, np.random.default_rng(data_ss), z_names=tuple(args.z), replace=True, delta=delta)
     zcell = np.unique(rep.z, axis=0, return_inverse=True)[1].ravel()
     stat = ApproxChi()
@@ -225,6 +233,25 @@ def one_rep(task) -> list[dict]:
             with Timer() as t_c:
                 p = double_bootstrap_pvalue(path[:, 0], path[:, 1:], rng)
             record(name, p, t_s, t_c)
+
+        # Truncated merge and the random baselines: a separate block with its own
+        # tie-break rng, so the shared ``rng`` above is consumed exactly as before.
+        # The random instances are built fresh per learner from the same SeedSequence
+        # children, so the oracle and fitted arms see identical random paths.
+        if args.random:
+            rtie = np.random.default_rng(rtie_ss)
+            extra = {f"merge@{k}": MergeSearch(max_levels=k) for k in args.truncations}
+            can_split = not (isinstance(xs, Saturated) or isinstance(ys, Saturated))
+            for k in args.truncations:
+                if can_split:
+                    extra[f"rsplit@{k}"] = RandomSplitSearch(max_levels=k, seed=rsplit_ss)
+                extra[f"rmerge@{k}"] = RandomMergeSearch(max_levels=k, seed=rmerge_ss)
+            for name, search in extra.items():
+                with Timer() as t_s:
+                    paths = search.paths(T_all, ts.Sigma, dx, dy, xs, ys, stat)
+                with Timer() as t_c:
+                    p = double_bootstrap_pvalue(paths[:, 0], paths[:, 1:], rtie)
+                record(name, p, t_s, t_c, paths)
 
         fitted = methods.Fitted(rep.x, rep.y, rep.z, f, g, dx, dy, ts.T_vector, ts.Sigma)
         with Timer() as t_s:
@@ -297,6 +324,9 @@ def main():
                     help="search unordered variables as Saturated even if a tree exists")
     ap.add_argument("--truncations", type=int, nargs="+", default=[2, 4])
     ap.add_argument("--no-full-split", dest="full_split", action="store_false")
+    ap.add_argument("--no-random", dest="random", action="store_false",
+                    help="skip merge@k and the random baselines rsplit@k / rmerge@k "
+                         "(depths from --truncations)")
     ap.add_argument("--reps", type=int, default=200)
     ap.add_argument("--n-boot", type=int, default=10000,
                     help="bootstrap draws; size checks are exact at any B, power needs 10k")

@@ -10,7 +10,11 @@ Conventions: alpha = 0.05; `Z = W = {Age, Sex}`; rows drawn i.i.d. from the 30,1
 population; rare levels of unordered variables pooled at expected count < 5.
 `split@k` = divisive search truncated after `k` splits (the primary method);
 `merge` = Algorithm 1; `mergecoarse@k` = minP over the merge path's coarsest `k+1`
-levels; `max`, `euclid`, `mGCM` depth-0; `chi_sq` pseudo-inverse chi-square;
+levels (**historical, withdrawn 2026-10-25**: it kept the last `k+1` rows of the full
+merge path, which is not a truncation of any search; the code is gone, replaced by
+`merge@k` = `MergeSearch(k)`, the first `k` merges from the finest partition, and the
+random baselines `rsplit@k` / `rmerge@k`, see `RANDOM_SEARCH.md`; the mergecoarse
+numbers below are kept as recorded); `max`, `euclid`, `mGCM` depth-0; `chi_sq` pseudo-inverse chi-square;
 `at_typed` / `at_cat` Ankan & Textor typed as the data types it / all categorical;
 `strat_chi2` Pearson chi-square stratified over Z cells. CPU = `time.process_time`
 in single-threaded workers on a 6-core Apple machine (details in each provenance
@@ -53,7 +57,7 @@ competitors do not.
 | split@8 | 0.055 | 0.054 | 0.057 | 0.061 | 0.062 |
 | split (k = 14) | 0.059 | 0.053 | 0.053 | 0.055 | 0.057 |
 | merge | 0.057 | 0.052 | 0.053 | 0.056 | 0.058 |
-| mergecoarse@1..8 | 0.054--0.072 | | | | |
+| mergecoarse@1..8 (historical) | 0.054--0.072 | | | | |
 | max / euclid | 0.045--0.051 | | | | |
 | mGCM | 0.062--0.066 | | | | |
 
@@ -83,7 +87,7 @@ cost grows sub-linearly in `B`; the merge search is linear. Calibration is ~3 ms
 
 Rejection at B = 10000 (SE <= 0.020; paired differences vs merge in brackets):
 
-| lam | split@1 | split@2 | split@4 | split (14) | merge | mergecoarse@2 | max | euclid | mGCM |
+| lam | split@1 | split@2 | split@4 | split (14) | merge | mergecoarse@2 (historical) | max | euclid | mGCM |
 |---|---|---|---|---|---|---|---|---|---|
 | 0.2 | 0.317 (+.033 ± .019) | 0.310 | 0.310 | 0.280 | 0.283 | 0.293 | 0.157 | 0.173 | 0.153 |
 | 0.3 | 0.613 (+.047 ± .019) | 0.610 | 0.603 | 0.570 | 0.567 | 0.600 | 0.303 | 0.400 | 0.263 |
@@ -93,9 +97,13 @@ Rejection at B = 10000 (SE <= 0.020; paired differences vs merge in brackets):
 * **Truncated split beats the full merge by 4--6 points at lam = 0.3--0.4** (about 3--4
   paired SEs), +3 at 0.2, nothing at the ceiling. Shallower is better: split@1 >=
   split@2 >= split@4 > split@8 > full split.
-* **It also beats the merge path truncated to the same depth** (split@2 vs
+* ~~**It also beats the merge path truncated to the same depth** (split@2 vs
   mergecoarse@2: +2.4 points at lam = 0.4), so on this effect the divisive *direction*
-  adds something beyond the multiplicity saving that DIVISIVE.md found at d = 8.
+  adds something beyond the multiplicity saving that DIVISIVE.md found at d = 8.~~
+  **Withdrawn (2026-10-25):** `mergecoarse@2` is not a truncated merge search, so this
+  comparison does not show what it was read as showing. Pending `merge@k` and the
+  random-baseline runs (`split@k - rsplit@k`, `merge@k - rmerge@k`); the numbers are
+  kept as recorded.
 * **Adaptive searches beat every depth-0 statistic by 11--37 points.**
 * **B barely matters for power**: 1--3 points from B = 100 to 1000, flat beyond.
 * Caveat: truncated split runs ~1 point over nominal size (section above), worth
@@ -105,7 +113,7 @@ Rejection at B = 10000 (SE <= 0.020; paired differences vs merge in brackets):
 
 Rejection at B = 10000 (SE <= 0.020):
 
-| lam | split@1 | split@2 | split@4 | split (14) | merge | mergecoarse@2 | max | euclid | mGCM |
+| lam | split@1 | split@2 | split@4 | split (14) | merge | mergecoarse@2 (historical) | max | euclid | mGCM |
 |---|---|---|---|---|---|---|---|---|---|
 | 1.0 | 0.440 | 0.430 | 0.440 | 0.443 | 0.450 | 0.463 | 0.227 | 0.250 | 0.130 |
 | 1.4 | 0.693 | 0.710 | 0.723 | 0.720 | 0.723 | **0.760** | 0.413 | 0.503 | 0.290 |
@@ -113,20 +121,24 @@ Rejection at B = 10000 (SE <= 0.020):
 | 2.0 | 0.977 | 0.970 | 0.977 | 0.967 | 0.970 | 0.973 | 0.810 | 0.897 | 0.700 |
 
 Paired vs merge: split@1 -0.010 / -0.030 / -0.020 / +0.007 (SE 0.009--0.021);
-split@2 -0.020 / -0.013 / -0.023 / 0.000; mergecoarse@2 +0.013 / **+0.037 ± 0.013** /
-+0.010 / +0.003.
+split@2 -0.020 / -0.013 / -0.023 / 0.000; mergecoarse@2 (historical, withdrawn)
++0.013 / **+0.037 ± 0.013** / +0.010 / +0.003.
 
 * **The real-direction ranking reverses.** On this middle-vs-extremes contrast,
-  truncated split is 1--3 points *below* the full merge (each ~1--1.5 SE), and the
-  merge path truncated to the same depth is best.
+  truncated split is 1--3 points *below* the full merge (each ~1--1.5 SE). (The
+  further claim that "the merge path truncated to the same depth is best" rested on
+  `mergecoarse@2` and is withdrawn pending `merge@k`.)
 * Likely mechanism: on an ordinal variable a divisive split cuts into contiguous
   pieces, so isolating the middle levels takes two splits from the top, whereas
   merging builds the middle group from below.
 * Adaptive searches still beat every depth-0 statistic by 20--30 points.
 * **Net so far:** truncated split wins on monotone effects (+4--6) and concedes a
-  little on non-monotone ones (-1 to -3). Not uniformly best; the merge path's
+  little on non-monotone ones (-1 to -3). Not uniformly best. ~~The merge path's
   coarse end (`mergecoarse@k`) is the most robust of the three across both
-  directions on this pair.
+  directions on this pair.~~ **Withdrawn (2026-10-25):** that rested on
+  `mergecoarse@k`, which is not a search; no conclusion about truncated merge or
+  about the value of direction stands until the `merge@k` and random-baseline runs
+  are in.
 
 ### Is the size excess a bug? Gaussian-vs-real check (`gauss_check.py`)
 
@@ -137,7 +149,7 @@ replicate scores the real `T` and a fresh draw from `N(0, Sigma_hat)` against th
 | | real T | Gaussian T |
 |---|---|---|
 | split@1 / @2 / @3 / @4 | 0.060 / 0.059 / 0.061 / 0.061 | 0.043 / 0.044 / 0.047 / 0.048 |
-| mergecoarse@1 / @2 / @3 / @4 | 0.066 / 0.065 / 0.068 / 0.065 | 0.049 / 0.051 / 0.049 / 0.051 |
+| mergecoarse@1 / @2 / @3 / @4 (historical; `gauss_check.py` now reports `merge@k`, `rsplit@k`, `rmerge@k`) | 0.066 / 0.065 / 0.068 / 0.065 | 0.049 / 0.051 / 0.049 / 0.051 |
 | merge | 0.059 | 0.047 |
 
 * **The search and minP calibration are correct:** the Gaussian arm is nominal.
@@ -158,6 +170,17 @@ Launch commands are in the session's queue scripts and are reproduced by:
     python sweep_semisynth.py --x Occupation --y Income --n 1000 --direction real --lams 0.2 0.3 0.4 0.5 --reps 300 --time-reps 0
     python sweep_semisynth.py --x Occupation --y Income --n 1000 --direction planted --lams 0.6 0.9 1.25 1.55 --reps 300 --time-reps 0
     python run_semisynth.py --x Education --y Income --lams 0 --reps 500 --n-boot 10000 --learners oracle mlp --truncations 1 2 4
+
+Also not run: the `merge@k` and random-baseline arms (`rsplit@k`, `rmerge@k`;
+`RANDOM_SEARCH.md` Section 6). The sweep now includes them by default, so re-running
+the Education x Income sweeps with the same `--lams`, `--reps`, `--seed` reproduces
+the existing rows exactly and pairs the new ones with them:
+
+    python sweep_semisynth.py --x Education --y Income --n 1000 --lams 0 --reps 1000 --n-boots 1000 --depths 1 2 4 8 --time-reps 0
+    python sweep_semisynth.py --x Education --y Income --n 1000 --direction real --lams 0.2 0.3 0.4 0.5 --reps 300 --depths 1 2 4 8 --time-reps 0
+    python sweep_semisynth.py --x Education --y Income --n 1000 --direction planted --lams 1.0 1.4 1.7 2.0 --reps 300 --depths 1 2 4 8 --time-reps 0
+    python gauss_check.py --x Education --y Income --reps 1000 --n-boot 3000 --depths 1 2 4 8
+    python run_semisynth.py --x Education --y Income --lams 0 --reps 500 --n-boot 10000 --learners oracle mlp --truncations 1 2 4 8
 
 ---
 

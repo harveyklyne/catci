@@ -31,6 +31,7 @@ import adult_semisynth as ss
 from catci.bootstrap import bootstrap_T
 from catci.calibrate import double_bootstrap_pvalue
 from catci.gcm import form_t_sigma
+from catci.randomsearch import RandomMergeSearch, RandomSplitSearch
 from catci.search import MergeSearch, SplitSearch
 from catci.statistic import ApproxChi
 from run_semisynth import OUT, _setup, machine_info
@@ -39,7 +40,8 @@ from run_semisynth import OUT, _setup, machine_info
 def one_rep(task):
     args, rep_id, seed = task
     pop, delta, _, _, (xs, ys) = _setup(args)
-    data_ss, boot_ss, extra_ss, cal_ss = seed.spawn(4)
+    data_ss, boot_ss, extra_ss, cal_ss, rand_ss = seed.spawn(5)  # spawn(5)[:4] == spawn(4)
+    rsplit_ss, rmerge_ss = rand_ss.spawn(2)
     rep = ss.draw(pop, args.n, 0.0, np.random.default_rng(data_ss), z_names=tuple(args.z),
                   replace=True, delta=delta)
     ts = form_t_sigma(rep.x, rep.y, rep.f_true, rep.g_true, normalise=False)
@@ -52,8 +54,13 @@ def one_rep(task):
         split = SplitSearch(max(args.depths)).paths(T_all, ts.Sigma, pop.dx, pop.dy, xs, ys, stat)
         merge = MergeSearch().paths(T_all, ts.Sigma, pop.dx, pop.dy, xs, ys, stat)
         cands = {f"split@{k}": split[: k + 1] for k in args.depths}
-        cands.update({f"mergecoarse@{k}": merge[-(k + 1):] for k in args.depths})
+        cands.update({f"merge@{k}": merge[: k + 1] for k in args.depths})
         cands["merge"] = merge
+        # random baselines: fresh instances, so both arms use the same seed
+        rsplit = RandomSplitSearch(seed=rsplit_ss).paths(T_all, ts.Sigma, pop.dx, pop.dy, xs, ys, stat)
+        rmerge = RandomMergeSearch(seed=rmerge_ss).paths(T_all, ts.Sigma, pop.dx, pop.dy, xs, ys, stat)
+        cands.update({f"rsplit@{k}": rsplit[: k + 1] for k in args.depths})
+        cands.update({f"rmerge@{k}": rmerge[: k + 1] for k in args.depths})
         for name, paths in cands.items():
             rng = np.random.default_rng(cal_ss)  # same tie-breaks for both arms
             p = double_bootstrap_pvalue(paths[:, 0], paths[:, 1:], rng)

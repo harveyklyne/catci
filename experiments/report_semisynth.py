@@ -50,6 +50,32 @@ def load(pattern: str) -> dict[str, pd.DataFrame]:
     return out
 
 
+def full_merge(columns) -> str:
+    """The full-depth merge column: the ``merge@k`` with the largest ``k``.
+
+    ``merge@1 ... merge@L`` are all present once the truncated merges are swept, so
+    "the first column starting with ``merge@``" is no longer the full search.
+    """
+    return max((c for c in columns if c.startswith("merge@")), key=lambda c: int(c.split("@")[1]))
+
+
+def route_differences(wide: pd.DataFrame) -> pd.DataFrame:
+    """Within-route paired differences, directed minus random, at each depth ``k``.
+
+    ``wide`` has one row per replicate and one column per ``method@k`` (reject
+    indicators). Returns mean and SE of ``split@k - rsplit@k`` and ``merge@k - rmerge@k``.
+    """
+    rows = {}
+    for directed, random in (("split", "rsplit"), ("merge", "rmerge")):
+        ks = sorted(int(c.split("@")[1]) for c in wide.columns if c.startswith(directed + "@"))
+        for k in ks:
+            a, b = f"{directed}@{k}", f"{random}@{k}"
+            if b in wide.columns:
+                d = wide[a] - wide[b]
+                rows[f"{a} - {b}"] = dict(diff=d.mean(), se=d.std(ddof=1) / np.sqrt(len(d)))
+    return pd.DataFrame.from_dict(rows, orient="index", columns=["diff", "se"])
+
+
 def sweep_report(stem: str, df: pd.DataFrame) -> None:
     df = df.assign(reject=df.p_value < ALPHA, m=df.method + "@" + df.k.astype(str))
     order = list(dict.fromkeys(df.m))
@@ -65,11 +91,15 @@ def sweep_report(stem: str, df: pd.DataFrame) -> None:
             # per-replicate difference of reject indicators.
             B = block.n_boot.max()
             wide = block[block.n_boot == B].pivot_table(index="rep", columns="m", values="reject")
-            base = [c for c in wide.columns if c.startswith("merge@")][0]
+            base = full_merge(wide.columns)
             diff = wide.sub(wide[base], axis=0)
             summ = pd.DataFrame({"vs merge": diff.mean(), "se": diff.std(ddof=1) / np.sqrt(len(diff))})
             print(f"\npaired difference vs {base} at B = {B}:\n")
             print(_md(summ.loc[[m for m in order if m in summ.index]]))
+            routes = route_differences(wide)
+            if not routes.empty:
+                print(f"\nwithin-route paired difference, directed - random, at B = {B}:\n")
+                print(_md(routes))
 
 
 def timing_report(stem: str) -> None:
